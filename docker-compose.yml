@@ -1,0 +1,14 @@
+services:
+  cosaguardo:
+    image: ghcr.io/land2595/cosaguardo:latest
+    build: .
+    container_name: cosaguardo
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - cosaguardo-data:/data
+
+volumes:
+  cosaguardo-data:

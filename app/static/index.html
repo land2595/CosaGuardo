@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CosaGuardo · Ultime uscite in streaming in Italia</title>
+  <meta name="description" content="Film e serie TV appena usciti su Netflix, Prime Video, Disney+, Sky/NOW, Paramount+ e le altre piattaforme italiane.">
+  <meta name="theme-color" content="#07070a">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="preload" href="/static/fonts/bebas-neue-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/fonts.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="top">
+    <a class="marquee" href="/" aria-label="CosaGuardo, home">
+      <span class="marquee-sign">Cosa<em>Guardo</em></span>
+    </a>
+    <nav class="tabs" role="tablist" aria-label="Sezioni">
+      <button role="tab" class="tab" data-view="novita">Ultime uscite</button>
+      <button role="tab" class="tab" data-view="tendenze">Di tendenza in Italia</button>
+    </nav>
+    <div class="status" id="status" aria-live="polite"></div>
+  </header>
+
+  <section class="hero" id="hero" hidden>
+    <div class="hero-bg" id="hero-bg"></div>
+    <div class="hero-content">
+      <p class="eyebrow" id="hero-eyebrow">In primo piano</p>
+      <h2 class="hero-title" id="hero-title"></h2>
+      <p class="hero-meta" id="hero-meta"></p>
+      <p class="hero-overview" id="hero-overview"></p>
+      <div class="hero-actions">
+        <button class="btn-gold" id="hero-open">Scopri di più</button>
+        <div class="logos" id="hero-platforms"></div>
+      </div>
+    </div>
+    <div class="hero-dots" id="hero-dots" role="tablist" aria-label="Titoli in primo piano"></div>
+  </section>
+
+  <section class="filters" aria-label="Filtri">
+    <div class="seg" id="tipo">
+      <button class="active" data-tipo="all">Tutti</button>
+      <button data-tipo="movie">Film</button>
+      <button data-tipo="tv">Serie TV</button>
+    </div>
+    <label class="search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 0 3.9 10.6l4.8 4.8 1.4-1.4-4.8-4.8A6 6 0 0 0 10 4zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8z"/></svg>
+      <input type="search" id="search" placeholder="Cerca un titolo" aria-label="Cerca un titolo">
+    </label>
+    <div class="chips" id="platforms" aria-label="Piattaforme"></div>
+  </section>
+
+  <div id="error" class="error" role="alert" hidden></div>
+  <main id="content" aria-busy="true"></main>
+  <p id="empty" class="empty" hidden>Nessun titolo in programmazione con questi filtri.</p>
+
+  <dialog id="detail" aria-labelledby="d-title">
+    <button class="close" aria-label="Chiudi" data-close>&times;</button>
+    <div class="d-hero" id="d-hero"></div>
+    <div class="d-body">
+      <img class="d-poster" id="d-poster" alt="">
+      <div class="d-text">
+        <p class="eyebrow" id="d-badge"></p>
+        <h2 id="d-title"></h2>
+        <p class="d-orig" id="d-orig"></p>
+        <p class="d-meta" id="d-meta"></p>
+        <p class="d-overview" id="d-overview"></p>
+        <div class="ticket">
+          <span class="ticket-label">Lo trovi su</span>
+          <div class="badges" id="d-platforms"></div>
+        </div>
+        <p class="d-links" id="d-links"></p>
+      </div>
+    </div>
+  </dialog>
+
+  <footer>
+    <p>Dati forniti da <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a>
+    e <a href="https://www.justwatch.com/it" target="_blank" rel="noopener">JustWatch</a> per il catalogo italiano.</p>
+    <p>Questo prodotto usa le API di TMDB ma non è approvato né certificato da TMDB.</p>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
