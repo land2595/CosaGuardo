@@ -75,11 +75,11 @@ function filtered(view = state.view) {
 
 // ---------------------------------------------------------------- schede
 
-function cardHtml(i) {
+function cardHtml(i, n = 0) {
   const fresh = state.view === "novita" && daysAgo(i.date) <= 2;
   const pill = fresh ? "Novità" : i.type === "movie" ? "Film" : "Serie TV";
   const poster = i.poster
-    ? `<img class="p" src="${esc(i.poster)}" alt="" loading="lazy">`
+    ? `<img class="p" src="${esc(i.poster)}" alt="" loading="lazy" onload="this.classList.add('ok')" onerror="this.classList.add('ok')">`
     : `<div class="noimg">${esc(i.title)}</div>`;
   const meta = state.view === "novita"
     ? `<b>${esc(relDate(i.date))}</b>${i.genres[0] ? ` · ${esc(i.genres[0])}` : ""}`
@@ -90,11 +90,13 @@ function cardHtml(i) {
       <span class="pill ${fresh ? "new" : ""}">${esc(pill)}</span>
       <div class="logos">${i.platforms.map(logoHtml).join("")}</div>
       ${i.rating ? `<span class="rating">★ ${i.rating}</span>` : ""}
+      ${i.overview ? `<div class="hover-info"><p>${esc(i.overview)}</p><span class="go">▶ Dettagli</span></div>` : ""}
+      <span class="glare"></span>
     </div>`;
   if (i.rank) {
     posterBox = `<div class="rank-row"><span class="rank" aria-label="Posizione ${i.rank}">${i.rank}</span>${posterBox}</div>`;
   }
-  return `<button class="card ${i.rank >= 10 ? "wide" : ""}" data-id="${esc(i.id)}">
+  return `<button class="card ${i.rank >= 10 ? "wide" : ""}" data-id="${esc(i.id)}" style="--i:${Math.min(n, 18)}">
     ${posterBox}
     <h3>${esc(i.title)}</h3>
     ${i.type === "tv" ? `<span class="sub">${esc(i.badge)}</span>` : ""}
@@ -106,7 +108,7 @@ function blockHtml(title, items, ranked = false) {
   const n = items.length;
   return `<section class="block">
     <div class="block-head"><h2>${esc(title)}</h2><span class="count">${n} ${n === 1 ? "titolo" : "titoli"}</span></div>
-    <div class="grid ${ranked ? "ranked" : ""}">${items.map(cardHtml).join("")}</div>
+    <div class="grid ${ranked ? "ranked" : ""}">${items.map((it, n) => cardHtml(it, n)).join("")}</div>
   </section>`;
 }
 
@@ -124,12 +126,34 @@ function render() {
   content.innerHTML = groups.filter((g) => g.items.length).map((g) => blockHtml(g.label, g.items)).join("");
 }
 
+function platformCounts() {
+  // Quanti titoli ha ogni piattaforma con i filtri attuali (tipo e ricerca)
+  const saved = state.platforms;
+  state.platforms = new Set();
+  const items = filtered();
+  state.platforms = saved;
+  const counts = { all: items.length };
+  for (const i of items) for (const p of i.platforms) counts[p] = (counts[p] || 0) + 1;
+  return counts;
+}
+
+function chipHtml(key, name, logo, color, count, on) {
+  return `<button class="chip ${on ? "on" : ""} ${key === "all" ? "all" : ""}" data-p="${esc(key)}" style="--c:${esc(color)}" aria-pressed="${on}">
+    <span class="chip-logo">${logo}</span>
+    <span class="chip-text"><span class="chip-name">${esc(name)}</span><span class="chip-count">${count} ${count === 1 ? "titolo" : "titoli"}</span></span>
+    <span class="chip-check" aria-hidden="true">✓</span>
+  </button>`;
+}
+
 function renderChips() {
   const ps = state.data?.piattaforme || {};
-  $("#platforms").innerHTML = Object.entries(ps).map(([k, p]) => `
-    <button class="chip ${state.platforms.has(k) ? "on" : ""}" data-p="${esc(k)}" aria-pressed="${state.platforms.has(k)}">
-      ${p.logo ? `<img src="${esc(p.logo)}" alt="">` : ""}${esc(p.name)}
-    </button>`).join("");
+  const counts = platformCounts();
+  const allIcon = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z"/></svg>`;
+  $("#platforms").innerHTML =
+    chipHtml("all", "Tutte", allIcon, "#f3c463", counts.all, !state.platforms.size) +
+    Object.entries(ps).map(([k, p]) => chipHtml(
+      k, p.name, p.logo ? `<img src="${esc(p.logo)}" alt="">` : "", p.color, counts[k] || 0, state.platforms.has(k),
+    )).join("");
 }
 
 function renderStatus(s) {
@@ -306,6 +330,7 @@ function setView(view) {
 
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
   setView(t.dataset.view);
+  renderChips();
   renderHero();
   render();
 }));
@@ -315,17 +340,19 @@ $("#tipo").addEventListener("click", (e) => {
   if (!b) return;
   state.tipo = b.dataset.tipo;
   $("#tipo").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
+  renderChips();
   renderHero();
   render();
 });
 
-$("#search").addEventListener("input", (e) => { state.q = e.target.value.trim(); render(); });
+$("#search").addEventListener("input", (e) => { state.q = e.target.value.trim(); renderChips(); render(); });
 
 $("#platforms").addEventListener("click", (e) => {
   const b = e.target.closest(".chip");
   if (!b) return;
   const k = b.dataset.p;
-  state.platforms.has(k) ? state.platforms.delete(k) : state.platforms.add(k);
+  if (k === "all") state.platforms.clear();
+  else state.platforms.has(k) ? state.platforms.delete(k) : state.platforms.add(k);
   localSet("platforms", JSON.stringify([...state.platforms]));
   renderChips();
   renderHero();
@@ -336,6 +363,30 @@ content.addEventListener("click", (e) => {
   const c = e.target.closest(".card[data-id]");
   if (c) openDetail(c.dataset.id);
 });
+
+// Inclinazione 3D della locandina sotto il mouse
+if (matchMedia("(hover: hover) and (prefers-reduced-motion: no-preference)").matches) {
+  content.addEventListener("pointermove", (e) => {
+    const poster = e.target.closest(".poster");
+    if (!poster) return;
+    const card = poster.closest(".card");
+    const r = poster.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width;
+    const y = (e.clientY - r.top) / r.height;
+    card.classList.add("tilting");
+    card.style.setProperty("--ry", `${(x - 0.5) * 14}deg`);
+    card.style.setProperty("--rx", `${(0.5 - y) * 12}deg`);
+    card.style.setProperty("--mx", `${x * 100}%`);
+    card.style.setProperty("--my", `${y * 100}%`);
+  });
+  content.addEventListener("pointerout", (e) => {
+    const card = e.target.closest(".card");
+    if (!card || card.contains(e.relatedTarget)) return;
+    card.classList.remove("tilting");
+    card.style.setProperty("--rx", "0deg");
+    card.style.setProperty("--ry", "0deg");
+  });
+}
 
 $("#hero-open").addEventListener("click", (e) => openDetail(e.currentTarget.dataset.id));
 $("#hero-dots").addEventListener("click", (e) => {

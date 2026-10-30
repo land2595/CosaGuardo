@@ -13,6 +13,8 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 
 ![Home](docs/home.png)
 
+![Locandine animate e filtro per piattaforma](docs/piattaforme.png)
+
 | Di tendenza in Italia | Scheda del titolo | Mobile |
 |---|---|---|
 | ![Tendenze](docs/tendenze.png) | ![Scheda](docs/scheda.png) | ![Mobile](docs/mobile.png) |
