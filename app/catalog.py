@@ -148,7 +148,8 @@ class Catalog:
     # ---------------------------------------------------------------- discover
 
     async def _discover(self, client, kind: str, pages: int, **params) -> list[int]:
-        ids = ",".join(str(i) for i in self._provider_map) or "0"
+        # "|" = disponibile su almeno una piattaforma (la "," di TMDB significa "su tutte")
+        ids = "|".join(str(i) for i in self._provider_map) or "0"
         base = {
             "watch_region": self.s.region,
             "with_watch_providers": ids,

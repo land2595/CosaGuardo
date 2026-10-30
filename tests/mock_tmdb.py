@@ -102,8 +102,15 @@ def _wp(ids):
     }}}
 
 
+def _and_providers(request: Request) -> bool:
+    # Come TMDB: con la virgola servono tutte le piattaforme insieme, quindi nessun titolo
+    return "," in request.query_params.get("with_watch_providers", "")
+
+
 @app.get("/discover/movie")
 def discover_movie(request: Request, page: int = 1):
+    if _and_providers(request):
+        return {"page": page, "total_pages": 0, "results": []}
     ids = list(MOVIES) if page == 1 else []
     if request.query_params.get("sort_by") == "popularity.desc":
         ids = list(MOVIES)[::-1]
@@ -111,7 +118,9 @@ def discover_movie(request: Request, page: int = 1):
 
 
 @app.get("/discover/tv")
-def discover_tv(page: int = 1):
+def discover_tv(request: Request, page: int = 1):
+    if _and_providers(request):
+        return {"page": page, "total_pages": 0, "results": []}
     return {"page": page, "total_pages": 1, "results": [{"id": i} for i in SHOWS]}
 
 
