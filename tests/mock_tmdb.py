@@ -160,3 +160,10 @@ def tv(sid: int):
         "popularity": r.uniform(10, 400),
         "watch/providers": _wp(s["providers"]),
     }
+
+
+@app.get("/configuration")
+def configuration(api_key: str = ""):
+    if api_key.startswith("sbagliata"):
+        return Response('{"status_code":7}', status_code=401, media_type="application/json")
+    return {"images": {"base_url": "/img/"}}

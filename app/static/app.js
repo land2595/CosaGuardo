@@ -208,6 +208,13 @@ function showHero(n, instant = false) {
 async function load() {
   const r = await fetch("/api/catalogo");
   state.data = await r.json();
+  document.body.classList.toggle("needs-key", !!state.data.serve_chiave);
+  $("#setup").hidden = !state.data.serve_chiave;
+  if (state.data.serve_chiave) {
+    renderStatus({ ...state.data, errore: null });
+    if (state.data.errore && state.data.aggiornato === null && $("#setup-key").value) showSetupMsg(state.data.errore, true);
+    return;
+  }
   renderStatus(state.data);
   renderChips();
   renderHero();
@@ -255,6 +262,36 @@ function openDetail(id) {
     `<a href="${esc(i.tmdb_url)}" target="_blank" rel="noopener">Scheda completa su TMDB</a>`;
   $("#detail").showModal();
 }
+
+// ------------------------------------------------------------ primo avvio
+
+function showSetupMsg(text, isError) {
+  const m = $("#setup-msg");
+  m.textContent = text;
+  m.className = `setup-msg ${isError ? "err" : "ok"}`;
+}
+
+$("#setup-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.currentTarget.querySelector("button");
+  btn.disabled = true;
+  showSetupMsg("Verifico la chiave…", false);
+  try {
+    const r = await fetch("/api/chiave", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chiave: $("#setup-key").value }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Chiave non accettata.");
+    showSetupMsg("Chiave valida! Sto preparando il catalogo, ci vuole circa mezzo minuto…", false);
+    setTimeout(load, 1500);
+  } catch (err) {
+    showSetupMsg(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ---------------------------------------------------------------- eventi
 

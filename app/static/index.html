@@ -25,6 +25,24 @@
     <div class="status" id="status" aria-live="polite"></div>
   </header>
 
+  <section class="setup" id="setup" hidden>
+    <div class="setup-card">
+      <p class="eyebrow">Benvenuto in sala</p>
+      <h2>Prima della proiezione</h2>
+      <p>CosaGuardo prende titoli, locandine e piattaforme da TMDB. Serve una chiave gratuita, da inserire una sola volta.</p>
+      <ol>
+        <li>Crea un account su <a href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">themoviedb.org</a>.</li>
+        <li>Apri <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">Impostazioni → API</a> e richiedi una chiave per uso personale.</li>
+        <li>Copia la <b>API Key</b> (o la <b>API Read Access Token</b>) e incollala qui sotto.</li>
+      </ol>
+      <form id="setup-form">
+        <input id="setup-key" type="text" autocomplete="off" spellcheck="false" placeholder="Incolla qui la chiave TMDB" aria-label="Chiave TMDB" required>
+        <button class="btn-gold" type="submit">Inizia lo spettacolo</button>
+      </form>
+      <p class="setup-msg" id="setup-msg" role="status"></p>
+    </div>
+  </section>
+
   <section class="hero" id="hero" hidden>
     <div class="hero-bg" id="hero-bg"></div>
     <div class="hero-content">

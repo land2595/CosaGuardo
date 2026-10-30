@@ -21,55 +21,57 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 
 ## Avvio rapido
 
-Serve solo Docker.
-
-1. **Ottieni una chiave TMDB gratuita**: registrati su [themoviedb.org](https://www.themoviedb.org/signup) e richiedi la chiave da [Impostazioni → API](https://www.themoviedb.org/settings/api). Va bene sia la *API Key* sia la *API Read Access Token*.
-
-2. **Scarica il progetto e configura la chiave**:
-
-   ```bash
-   git clone https://github.com/land2595/cosaguardo.git
-   cd cosaguardo
-   cp .env.example .env
-   # apri .env e incolla la chiave in TMDB_API_KEY=
-   ```
-
-3. **Avvia**:
-
-   ```bash
-   docker compose up -d
-   ```
-
-4. Apri **http://localhost:8080**. Il primo caricamento del catalogo richiede circa 30 secondi.
-
-Per aggiornare all'ultima versione:
+Serve solo Docker, senza scaricare niente:
 
 ```bash
+docker run -d --name cosaguardo -p 8080:8080 -v cosaguardo-data:/data --restart unless-stopped ghcr.io/land2595/cosaguardo:latest
+```
+
+Apri **http://localhost:8080**. Al primo avvio la pagina ti chiede la chiave TMDB, che è gratuita: crei un account su [themoviedb.org](https://www.themoviedb.org/signup), la richiedi da [Impostazioni → API](https://www.themoviedb.org/settings/api) e la incolli. La chiave viene salvata nel volume `cosaguardo-data`, quindi resta anche dopo un riavvio o un aggiornamento. Il primo caricamento del catalogo richiede circa 30 secondi.
+
+![Primo avvio](docs/primo-avvio.png)
+
+L'immagine è disponibile sia per `amd64` sia per `arm64`, quindi gira anche su Raspberry Pi, NAS e Mac con Apple Silicon.
+
+### Con Docker Compose
+
+Crea un file `docker-compose.yml` con questo contenuto (è lo stesso che trovi nel repository) e lancia `docker compose up -d`:
+
+```yaml
+services:
+  cosaguardo:
+    image: ghcr.io/land2595/cosaguardo:latest
+    container_name: cosaguardo
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TMDB_API_KEY: ""   # facoltativa: se vuota si inserisce dalla pagina
+    volumes:
+      - cosaguardo-data:/data
+
+volumes:
+  cosaguardo-data:
+```
+
+### Aggiornare
+
+```bash
+# con docker run
+docker pull ghcr.io/land2595/cosaguardo:latest && docker rm -f cosaguardo
+# poi rilancia il comando docker run qui sopra
+
+# con docker compose
 docker compose pull && docker compose up -d
 ```
 
-### Senza clonare il repository
-
-L'immagine viene pubblicata automaticamente su GitHub Container Registry:
-
-```bash
-docker run -d --name cosaguardo -p 8080:8080 \
-  -e TMDB_API_KEY=la_tua_chiave \
-  -v cosaguardo-data:/data \
-  --restart unless-stopped \
-  ghcr.io/land2595/cosaguardo:latest
-```
-
-L'immagine è disponibile sia per `amd64` sia per `arm64`, quindi gira anche su Raspberry Pi e Mac con Apple Silicon.
-
 ## Configurazione
 
-Tutte le opzioni si impostano nel file `.env` (o come variabili d'ambiente).
+Tutte le opzioni sono variabili d'ambiente (`-e NOME=valore` con `docker run`, oppure la sezione `environment` del compose). Nessuna è obbligatoria.
 
 | Variabile | Predefinito | Descrizione |
 |---|---|---|
-| `TMDB_API_KEY` | | **Obbligatoria.** Chiave TMDB (v3) o token di lettura (v4). |
-| `PORT` | `8080` | Porta su cui esporre l'app (solo con docker compose). |
+| `TMDB_API_KEY` | | Chiave TMDB (v3) o token di lettura (v4). Se manca, la pagina la chiede al primo avvio. |
 | `REFRESH_MINUTES` | `60` | Ogni quanti minuti aggiornare il catalogo. |
 | `MOVIE_DAYS` | `90` | Un film è "uscita recente" se è uscito negli ultimi N giorni. |
 | `TV_DAYS` | `30` | Una serie è "uscita recente" se ha avuto episodi negli ultimi N giorni. |
@@ -100,11 +102,15 @@ I dati di disponibilità arrivano da [JustWatch](https://www.justwatch.com/it) t
 | `GET /api/catalogo` | Ultime uscite, tendenze e piattaforme. Filtri opzionali: `tipo=movie\|tv`, `piattaforma=netflix` (ripetibile), `q=titolo`. |
 | `GET /api/stato` | Ora dell'ultimo aggiornamento ed eventuali errori. |
 | `POST /api/aggiorna` | Forza un aggiornamento immediato. |
+| `POST /api/chiave` | Imposta la chiave TMDB (solo se non è ancora configurata). |
 | `GET /health` | Controllo di salute per Docker. |
 
 ## Sviluppo
 
 ```bash
+git clone https://github.com/land2595/cosaguardo.git && cd cosaguardo
+docker build -t cosaguardo .        # immagine locale
+
 pip install -r requirements.txt pytest
 pytest -q tests
 

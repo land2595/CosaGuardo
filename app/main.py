@@ -3,11 +3,13 @@ import logging
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .catalog import Catalog
+from pydantic import BaseModel
+
+from .catalog import Catalog, TMDBError
 from .config import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -62,6 +64,7 @@ def get_catalogo(
         "aggiornato": d.get("aggiornato"),
         "aggiornamento_in_corso": catalog.refreshing,
         "errore": catalog.error,
+        "serve_chiave": catalog.needs_key,
         "piattaforme": d.get("piattaforme", {}),
         "novita": _filter(d.get("novita", []), tipo, piattaforma, q),
         "tendenze": _filter(d.get("tendenze", []), tipo, piattaforma, q),
@@ -75,6 +78,7 @@ def get_stato():
         "aggiornato": d.get("aggiornato"),
         "aggiornamento_in_corso": catalog.refreshing,
         "errore": catalog.error,
+        "serve_chiave": catalog.needs_key,
         "novita": len(d.get("novita", [])),
         "tendenze": len(d.get("tendenze", [])),
         "intervallo_minuti": settings.refresh_minutes,
@@ -85,6 +89,26 @@ def get_stato():
 async def post_aggiorna():
     if not catalog.refreshing:
         asyncio.create_task(catalog.refresh())
+    return {"ok": True}
+
+
+class Chiave(BaseModel):
+    chiave: str
+
+
+@app.post("/api/chiave")
+async def post_chiave(body: Chiave):
+    # Si puo' impostare solo al primo avvio (o se quella salvata non e' valida),
+    # cosi' chi visita la pagina non puo' sostituire una chiave funzionante.
+    if not catalog.needs_key:
+        raise HTTPException(403, "La chiave e' gia' configurata.")
+    if len(body.chiave.strip()) < 20:
+        raise HTTPException(400, "La chiave sembra troppo corta.")
+    try:
+        await catalog.set_key(body.chiave)
+    except TMDBError as e:
+        raise HTTPException(400, str(e)) from e
+    asyncio.create_task(catalog.refresh())
     return {"ok": True}
 
 

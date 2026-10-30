@@ -34,6 +34,45 @@ class Catalog:
         self._details: dict[str, dict] = {}
         self._sem = asyncio.Semaphore(8)
         self._cache_file = os.path.join(self.s.data_dir, "catalogo.json")
+        self._key_file = os.path.join(self.s.data_dir, "chiave_tmdb")
+        self.key_from_env = bool(self.s.tmdb_api_key)
+        if not self.key_from_env:
+            self._load_key()
+
+    # ---------------------------------------------------------- chiave TMDB
+
+    def _load_key(self) -> None:
+        try:
+            with open(self._key_file, encoding="utf-8") as f:
+                self.s.tmdb_api_key = f.read().strip()
+        except OSError:
+            pass
+
+    @property
+    def needs_key(self) -> bool:
+        """True se la chiave va inserita dalla pagina (assente o non valida)."""
+        if self.key_from_env:
+            return False
+        return not self.s.tmdb_api_key or (self.error or "").startswith("Chiave TMDB non valida")
+
+    async def set_key(self, key: str) -> None:
+        """Verifica la chiave su TMDB e la salva in /data."""
+        old = self.s.tmdb_api_key
+        self.s.tmdb_api_key = key.strip()
+        try:
+            async with self._client() as client:
+                await self._get(client, "/configuration")
+        except TMDBError:
+            self.s.tmdb_api_key = old
+            raise
+        except Exception as e:  # noqa: BLE001
+            self.s.tmdb_api_key = old
+            raise TMDBError(f"Verifica della chiave non riuscita: {e}") from e
+        os.makedirs(self.s.data_dir, exist_ok=True)
+        with open(self._key_file, "w", encoding="utf-8") as f:
+            f.write(self.s.tmdb_api_key)
+        os.chmod(self._key_file, 0o600)
+        self.error = None
 
     # ------------------------------------------------------------------ HTTP
 
@@ -62,7 +101,7 @@ class Catalog:
                     await asyncio.sleep(float(r.headers.get("Retry-After", 2)))
                     continue
                 if r.status_code == 401:
-                    raise TMDBError("Chiave TMDB non valida (TMDB_API_KEY).")
+                    raise TMDBError("Chiave TMDB non valida: controlla di averla copiata per intero.")
                 if r.status_code == 404:
                     return {}
                 r.raise_for_status()
@@ -217,7 +256,7 @@ class Catalog:
 
     async def refresh(self) -> None:
         if not self.s.tmdb_api_key:
-            self.error = "Manca la chiave TMDB: imposta TMDB_API_KEY nel file .env."
+            self.error = "Manca la chiave TMDB: inseriscila nella pagina o imposta TMDB_API_KEY."
             log.error(self.error)
             return
         if self.refreshing:
