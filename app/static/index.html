@@ -20,6 +20,8 @@
     </a>
     <nav class="tabs" role="tablist" aria-label="Sezioni">
       <button role="tab" class="tab" data-view="novita">Ultime uscite</button>
+      <button role="tab" class="tab" data-view="prossimamente">Prossimamente</button>
+      <button role="tab" class="tab" data-view="da_non_perdere">Da non perdere</button>
       <button role="tab" class="tab" data-view="tendenze">Di tendenza in Italia</button>
       <button role="tab" class="tab" data-view="richieste" hidden>Le mie richieste</button>
     </nav>
@@ -95,9 +97,22 @@
           <span class="ticket-label">Lo trovi su</span>
           <div class="badges" id="d-platforms"></div>
         </div>
+        <div class="d-status" id="d-status" hidden></div>
         <div class="d-actions" id="d-actions">
           <button class="btn-gold" id="d-trailer" hidden>▶ Guarda il trailer</button>
           <button class="btn-request" id="d-request" hidden></button>
+          <button class="btn-request more" id="d-more" hidden>＋ Altre stagioni</button>
+        </div>
+        <div class="seasons-panel" id="d-seasons" hidden>
+          <div class="seasons-head">
+            <span class="ticket-label">Quali stagioni vuoi?</span>
+            <button class="season-all" id="d-seasons-all" type="button">Seleziona tutte</button>
+          </div>
+          <div class="seasons-grid" id="d-seasons-grid"></div>
+          <div class="seasons-foot">
+            <button class="btn-gold" id="d-seasons-ok" type="button">Richiedi</button>
+            <button class="season-cancel" id="d-seasons-cancel" type="button">Annulla</button>
+          </div>
         </div>
         <p class="d-request-msg" id="d-request-msg" role="status"></p>
         <p class="d-links" id="d-links"></p>

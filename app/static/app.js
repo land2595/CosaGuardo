@@ -1,11 +1,13 @@
 const state = {
-  view: localGet("view") === "tendenze" ? "tendenze" : "novita",
+  view: ["tendenze", "prossimamente", "da_non_perdere"].includes(localGet("view")) ? localGet("view") : "novita",
   tipo: "all",
   q: "",
   platforms: new Set(JSON.parse(localGet("platforms") || "[]")),
   data: null,
   hero: { items: [], index: 0, timer: null },
-  servizi: { radarr: false, sonarr: false },
+  servizi: { radarr: false, sonarr: false, plex: false },
+  plex: { movie: new Set(), tv: new Set() },
+  seasons: null,
   requests: [],
   requestsLoaded: false,
 };
@@ -78,21 +80,46 @@ function filtered(view = state.view) {
 
 // ---------------------------------------------------------------- schede
 
+function onPlex(i) {
+  return state.plex[i.type]?.has(i.tmdb_id);
+}
+
+function untilText(iso) {
+  const d = -daysAgo(iso);
+  if (d <= 0) return "Oggi";
+  if (d === 1) return "Domani";
+  if (d < 7) return `Fra ${d} giorni`;
+  return fmtShort.format(toDate(iso));
+}
+
+function calHtml(iso) {
+  const d = toDate(iso);
+  return `<span class="cal"><b>${d.getDate()}</b>${esc(d.toLocaleDateString("it-IT", { month: "short" }).replace(".", ""))}</span>`;
+}
+
 function cardHtml(i, n = 0) {
   const fresh = state.view === "novita" && daysAgo(i.date) <= 2;
-  const pill = fresh ? "Novità" : i.type === "movie" ? "Film" : "Serie TV";
+  const upcoming = state.view === "prossimamente";
+  const pill = fresh ? "Novità" : upcoming ? "In arrivo" : i.type === "movie" ? "Film" : "Serie TV";
   const poster = i.poster
     ? `<img class="p" src="${esc(i.poster)}" alt="" loading="lazy" onload="this.classList.add('ok')" onerror="this.classList.add('ok')">`
     : `<div class="noimg">${esc(i.title)}</div>`;
-  const meta = state.view === "novita"
-    ? `<b>${esc(relDate(i.date))}</b>${i.genres[0] ? ` · ${esc(i.genres[0])}` : ""}`
-    : `${esc(i.year)}${i.genres[0] ? ` · ${esc(i.genres[0])}` : ""}`;
+  const genre = i.genres?.[0] ? ` · ${esc(i.genres[0])}` : "";
+  const meta = state.view === "novita" ? `<b>${esc(relDate(i.date))}</b>${genre}`
+    : upcoming ? `<b>${esc(untilText(i.date))}</b>${genre}`
+    : `${esc(i.year)}${genre}`;
+  const corner = [
+    upcoming && i.date ? calHtml(i.date) : "",
+    state.view === "da_non_perdere" && i.rating ? `<span class="medal">★<b>${i.rating}</b></span>` : "",
+    onPlex(i) ? `<span class="on-plex">Su Plex</span>` : "",
+  ].join("");
   let posterBox = `
     <div class="poster">
       ${poster}
-      <span class="pill ${fresh ? "new" : ""}">${esc(pill)}</span>
+      <span class="pill ${fresh ? "new" : upcoming ? "soon" : ""}">${esc(pill)}</span>
+      ${corner ? `<div class="corner">${corner}</div>` : ""}
       <div class="logos">${i.platforms.map(logoHtml).join("")}</div>
-      ${i.rating ? `<span class="rating">★ ${i.rating}</span>` : ""}
+      ${i.rating && state.view !== "da_non_perdere" && !upcoming ? `<span class="rating">★ ${i.rating}</span>` : ""}
       ${i.overview ? `<div class="hover-info"><p>${esc(i.overview)}</p><span class="go">▶ Dettagli</span></div>` : ""}
       <span class="glare"></span>
     </div>`;
@@ -126,6 +153,22 @@ function render() {
   }
   if (state.view === "tendenze") {
     content.innerHTML = items.length ? blockHtml("I più visti questa settimana", items, true) : "";
+    return;
+  }
+  if (state.view === "da_non_perdere") {
+    content.innerHTML = items.length ? blockHtml("I più apprezzati del momento", items) : "";
+    return;
+  }
+  if (state.view === "prossimamente") {
+    const groups = new Map();
+    for (const i of items) {
+      const d = -daysAgo(i.date);
+      const label = d <= 7 ? "Questa settimana" : d <= 14 ? "La prossima settimana"
+        : `A ${toDate(i.date).toLocaleDateString("it-IT", { month: "long" })}`;
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(i);
+    }
+    content.innerHTML = [...groups].map(([label, list]) => blockHtml(label, list)).join("");
     return;
   }
   const groups = BUCKETS.map((b) => ({ ...b, items: [] }));
@@ -186,9 +229,12 @@ function skeleton() {
 // ------------------------------------------------------------------ hero
 
 function pickHero() {
-  const pool = state.view === "tendenze"
-    ? filtered("tendenze")
-    : [...filtered("novita")].filter((i) => daysAgo(i.date) <= 14).sort((a, b) => b.popularity - a.popularity);
+  if (state.view === "richieste") return [];
+  const pool = state.view === "novita"
+    ? [...filtered("novita")].filter((i) => daysAgo(i.date) <= 14).sort((a, b) => b.popularity - a.popularity)
+    : state.view === "prossimamente"
+      ? [...filtered("prossimamente")].filter((i) => -daysAgo(i.date) <= 21).sort((a, b) => b.popularity - a.popularity)
+      : filtered(state.view);
   return pool.filter((i) => i.backdrop && i.overview).slice(0, 5);
 }
 
@@ -219,9 +265,12 @@ function showHero(n, instant = false) {
   const bg = $("#hero-bg");
   const apply = () => {
     bg.style.backgroundImage = `url("${i.backdrop.replace("/w780/", "/w1280/")}")`;
-    $("#hero-eyebrow").textContent = state.view === "tendenze"
-      ? `N° ${i.rank} di tendenza in Italia`
-      : `${i.type === "movie" ? "Film" : i.badge} · ${relDate(i.date)}`;
+    const where = i.platforms.map((p) => platform(p)?.name).filter(Boolean).join(", ");
+    $("#hero-eyebrow").textContent = {
+      tendenze: `N° ${i.rank} di tendenza in Italia`,
+      prossimamente: `${i.type === "movie" ? "Film" : i.badge} · dal ${fmtLong.format(toDate(i.date))}${where ? ` su ${where}` : ""}`,
+      da_non_perdere: `★ ${i.rating} · Da non perdere`,
+    }[state.view] || `${i.type === "movie" ? "Film" : i.badge} · ${relDate(i.date)}`;
     $("#hero-title").textContent = i.title;
     $("#hero-meta").textContent = [i.year, i.genres.slice(0, 3).join(", "), i.rating ? `★ ${i.rating}` : ""].filter(Boolean).join("  ·  ");
     $("#hero-overview").textContent = i.overview;
@@ -304,18 +353,81 @@ function stopTrailer() {
 const REQ_LABELS = {
   assente: "＋ Richiedi",
   richiesto: "⏳ Richiesto, in attesa",
-  parziale: "⬇ In arrivo",
-  disponibile: "✓ Già disponibile",
+  parziale: "⬇ In parte scaricato",
+  disponibile: "✓ Già scaricato",
   sconosciuto: "Servizio non raggiungibile",
 };
-const REQ_BADGES = { assente: "Non richiesto", richiesto: "Richiesto", parziale: "In arrivo", disponibile: "Disponibile", sconosciuto: "Stato sconosciuto" };
+const REQ_BADGES = { assente: "Non in libreria", richiesto: "Richiesto", parziale: "In parte", disponibile: "Scaricato", sconosciuto: "Stato sconosciuto" };
 
-function setRequestButton(stato, servizio) {
+function fmtSize(bytes) {
+  if (!bytes) return "";
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1 ? `${gb.toLocaleString("it-IT", { maximumFractionDigits: 1 })} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
+function fmtTimeLeft(t) {
+  // "01:02:03" o "1.02:03:04" (giorni.ore:min:sec)
+  if (!t) return "";
+  const m = /^(?:(\d+)\.)?(\d+):(\d+):\d+$/.exec(t);
+  if (!m) return "";
+  const [d, h, min] = [Number(m[1] || 0), Number(m[2]), Number(m[3])];
+  if (d) return `circa ${d} g ${h} h`;
+  if (h) return `circa ${h} h ${min} min`;
+  return min ? `circa ${min} min` : "quasi finito";
+}
+
+function progressHtml(dl) {
+  if (!dl) return "";
+  const label = dl.in_pausa ? "In pausa" : dl.in_attesa ? "In coda" : `${String(dl.percentuale).replace(".", ",")}%`;
+  const extra = [dl.download > 1 ? `${dl.download} file` : "", fmtTimeLeft(dl.tempo_rimanente)].filter(Boolean).join(" · ");
+  return `<div class="dl"><div class="dl-bar"><span style="width:${Math.max(2, dl.percentuale)}%"></span></div>
+    <div class="dl-text"><b>⬇ ${esc(label)}</b>${extra ? `<span>${esc(extra)}</span>` : ""}</div></div>`;
+}
+
+function seasonsSummary(det) {
+  const wanted = (det?.stagioni || []).filter((s) => s.monitorata);
+  if (!wanted.length) return "";
+  const names = wanted.length === det.stagioni.length ? "Tutte le stagioni" : `Stagion${wanted.length === 1 ? "e" : "i"} ${wanted.map((s) => s.numero).join(", ")}`;
+  return `${names} · ${det.episodi_scaricati}/${det.episodi_previsti} episodi`;
+}
+
+function statusPanelHtml(i, r) {
+  const rows = [];
+  if (r.plex) {
+    const what = i.type === "tv" ? `${r.plex.stagioni} stagion${r.plex.stagioni === 1 ? "e" : "i"} · ${r.plex.episodi} episodi` : "Pronto da guardare";
+    rows.push(`<div class="st-row plex"><span class="st-icon">▶</span><div><b>Già su Plex</b><span>${esc(what)}</span></div>
+      ${r.plex.url ? `<a class="st-link" href="${esc(r.plex.url)}" target="_blank" rel="noopener">Apri in Plex</a>` : ""}</div>`);
+  }
+  const det = r.dettagli;
+  if (det) {
+    let text;
+    if (i.type === "tv") {
+      text = seasonsSummary(det) || "Nessuna stagione monitorata";
+    } else {
+      text = det.stato === "disponibile" ? ["Scaricato", det.qualita, fmtSize(det.dimensione)].filter(Boolean).join(" · ") : "In attesa del download";
+    }
+    rows.push(`<div class="st-row arr ${esc(det.stato)}"><span class="st-icon">${det.stato === "disponibile" ? "✓" : "⏳"}</span>
+      <div><b>In ${esc(r.servizio)}</b><span>${esc(text)}</span></div></div>`);
+    if (i.type === "tv" && det.stagioni?.length) {
+      rows.push(`<div class="season-bars">${det.stagioni.map((s) => {
+        const pct = s.totali ? Math.round(s.scaricati / s.totali * 100) : 0;
+        return `<div class="sb ${s.monitorata ? "" : "off"}" title="Stagione ${s.numero}: ${s.scaricati}/${s.totali} episodi">
+          <span class="sb-n">S${s.numero}</span><span class="sb-bar"><i style="width:${pct}%"></i></span><span class="sb-c">${s.scaricati}/${s.totali}</span></div>`;
+      }).join("")}</div>`);
+    }
+  }
+  if (r.download) rows.push(progressHtml(r.download));
+  return rows.join("");
+}
+
+function setRequestButton(stato, servizio, det) {
   const b = $("#d-request");
   b.className = `btn-request ${stato || ""}`;
   b.disabled = stato !== "assente";
   b.textContent = stato === "assente" ? `${REQ_LABELS.assente} a ${servizio}` : REQ_LABELS[stato] || "";
   b.title = stato === "assente" ? `Aggiunge il titolo a ${servizio} e avvia la ricerca` : "";
+  // Serie gia' in Sonarr con stagioni non ancora richieste
+  $("#d-more").hidden = !(det?.stagioni?.some((s) => !s.monitorata));
 }
 
 function requestMsg(text, isError) {
@@ -327,39 +439,118 @@ function requestMsg(text, isError) {
 async function loadRequestState(i) {
   const svc = i.type === "movie" ? state.servizi.radarr : state.servizi.sonarr;
   const b = $("#d-request");
+  const panel = $("#d-status");
   b.hidden = !svc;
-  if (!svc) return;
-  b.className = "btn-request loading";
-  b.disabled = true;
-  b.textContent = "Controllo…";
+  $("#d-more").hidden = true;
+  panel.hidden = true;
+  if (!svc && !state.servizi.plex) return;
+  if (svc) {
+    b.className = "btn-request loading";
+    b.disabled = true;
+    b.textContent = "Controllo…";
+  }
   try {
     const r = await (await fetch(`/api/richieste/${encodeURIComponent(i.id)}`)).json();
     if ($("#detail").dataset.id !== i.id) return;
-    setRequestButton(r.stato, r.servizio);
+    if (svc) setRequestButton(r.stato, r.servizio, r.dettagli);
     if (r.errore) requestMsg(r.errore, true);
+    panel.innerHTML = statusPanelHtml(i, r);
+    panel.hidden = !panel.innerHTML.trim();
   } catch {
-    setRequestButton("sconosciuto");
+    if (svc) setRequestButton("sconosciuto");
   }
 }
 
-async function sendRequest() {
+// Scelta delle stagioni (solo serie)
+async function openSeasons() {
   const id = $("#detail").dataset.id;
+  const i = findItem(id);
+  const box = $("#d-seasons");
+  box.hidden = false;
+  $("#d-seasons-grid").innerHTML = `<p class="seasons-loading">Carico le stagioni…</p>`;
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  try {
+    const r = await fetch(`/api/serie/${i.tmdb_id}/stagioni`);
+    if (!r.ok) throw new Error();
+    const list = (await r.json()).stagioni;
+    if ($("#detail").dataset.id !== id) return;
+    state.seasons = list.map((s) => {
+      const requested = !!s.sonarr?.monitorata;
+      const plexFull = s.plex != null && s.episodi && s.plex >= s.episodi;
+      return { ...s, requested, selected: !requested && !plexFull };
+    });
+    renderSeasons();
+  } catch {
+    $("#d-seasons-grid").innerHTML = `<p class="seasons-loading err">Impossibile caricare le stagioni.</p>`;
+  }
+}
+
+function renderSeasons() {
+  const list = state.seasons || [];
+  $("#d-seasons-grid").innerHTML = list.map((s, k) => {
+    const notes = [];
+    if (s.requested) notes.push(`<em class="n-req">Già richiesta${s.sonarr.totali ? ` · ${s.sonarr.scaricati}/${s.sonarr.totali}` : ""}</em>`);
+    if (s.plex != null) notes.push(`<em class="n-plex">Su Plex ${s.plex}/${s.episodi}</em>`);
+    if (s.data && s.data > new Date().toISOString().slice(0, 10)) notes.push(`<em>Dal ${esc(fmtShort.format(toDate(s.data)))}</em>`);
+    return `<button type="button" class="season ${s.selected || s.requested ? "on" : ""} ${s.requested ? "locked" : ""}" data-k="${k}" ${s.requested ? "disabled" : ""}>
+      <span class="season-check">✓</span>
+      <span class="season-name">Stagione ${s.numero}</span>
+      <span class="season-eps">${s.episodi} episodi</span>
+      ${notes.join("")}
+    </button>`;
+  }).join("") || `<p class="seasons-loading">Nessuna stagione trovata.</p>`;
+  const n = list.filter((s) => s.selected).length;
+  const ok = $("#d-seasons-ok");
+  ok.disabled = !n;
+  ok.textContent = n ? `Richiedi ${n} stagion${n === 1 ? "e" : "i"} a Sonarr` : "Scegli almeno una stagione";
+  const free = list.filter((s) => !s.requested);
+  $("#d-seasons-all").textContent = free.length && free.every((s) => s.selected) ? "Deseleziona tutte" : "Seleziona tutte";
+}
+
+$("#d-seasons-grid").addEventListener("click", (e) => {
+  const b = e.target.closest(".season[data-k]");
+  if (!b || b.disabled) return;
+  const s = state.seasons[Number(b.dataset.k)];
+  s.selected = !s.selected;
+  renderSeasons();
+});
+$("#d-seasons-all").addEventListener("click", () => {
+  const free = state.seasons.filter((s) => !s.requested);
+  const all = free.every((s) => s.selected);
+  free.forEach((s) => { s.selected = !all; });
+  renderSeasons();
+});
+$("#d-seasons-cancel").addEventListener("click", () => { $("#d-seasons").hidden = true; });
+$("#d-seasons-ok").addEventListener("click", () => {
+  const free = state.seasons.filter((s) => !s.requested);
+  const chosen = state.seasons.filter((s) => s.selected).map((s) => s.numero);
+  // Tutte le stagioni di una serie nuova: le future verranno monitorate da Sonarr
+  const all = free.length === state.seasons.length && chosen.length === state.seasons.length;
+  sendRequest(all ? null : chosen);
+});
+
+async function sendRequest(stagioni) {
+  const id = $("#detail").dataset.id;
+  const item = findItem(id);
   const b = $("#d-request");
   b.className = "btn-request loading";
   b.disabled = true;
   b.textContent = "Invio richiesta…";
+  $("#d-more").hidden = true;
+  $("#d-seasons").hidden = true;
   requestMsg("");
   try {
     const r = await fetch("/api/richieste", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(stagioni === undefined ? { id } : { id, stagioni }),
     });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Richiesta non riuscita.");
-    setRequestButton(body.stato, body.servizio);
-    requestMsg(`Fatto! ${body.servizio} sta cercando il titolo.`);
+    requestMsg(`Fatto! ${body.servizio} sta cercando ${stagioni?.length ? `le stagioni ${stagioni.join(", ")}` : "il titolo"}.`);
     state.requestsLoaded = false;
+    loadRequestState(item);
   } catch (err) {
-    setRequestButton("assente", findItem(id)?.type === "movie" ? "Radarr" : "Sonarr");
+    setRequestButton("assente", item?.type === "movie" ? "Radarr" : "Sonarr");
     requestMsg(err.message, true);
   }
 }
@@ -371,6 +562,15 @@ async function loadServizi() {
   const any = state.servizi.radarr || state.servizi.sonarr;
   document.querySelector('.tab[data-view="richieste"]').hidden = !any;
   if (!any && state.view === "richieste") setView("novita");
+  if (state.servizi.plex) loadPlex();
+}
+
+async function loadPlex() {
+  try {
+    const d = await (await fetch("/api/plex")).json();
+    state.plex = { movie: new Set(d.movie), tv: new Set(d.tv) };
+    if (state.view !== "richieste") render();
+  } catch { /* ignora */ }
 }
 
 function requestCardHtml(r, n) {
@@ -378,22 +578,30 @@ function requestCardHtml(r, n) {
     ? `<img class="p" src="${esc(r.poster)}" alt="" loading="lazy" onload="this.classList.add('ok')" onerror="this.classList.add('ok')">`
     : `<div class="noimg">${esc(r.title)}</div>`;
   const when = new Date(r.richiesto_il).toLocaleDateString("it-IT", { day: "numeric", month: "short" });
-  return `<button class="card" data-id="${esc(r.id)}" style="--i:${Math.min(n, 18)}">
+  const det = r.dettagli;
+  const info = r.type === "tv"
+    ? seasonsSummary(det) || (r.stagioni ? `Stagioni ${r.stagioni.join(", ")}` : "Tutte le stagioni")
+    : det?.stato === "disponibile" ? ["Scaricato", det.qualita, fmtSize(det.dimensione)].filter(Boolean).join(" · ") : "";
+  return `<button class="card req-card" data-id="${esc(r.id)}" style="--i:${Math.min(n, 18)}">
     <div class="poster">
       ${poster}
       <span class="pill">${r.type === "movie" ? "Film" : "Serie TV"}</span>
-      <span class="req-status ${esc(r.stato)}">${esc(REQ_BADGES[r.stato] || r.stato)}</span>
-      <div class="logos">${(r.platforms || []).map(logoHtml).join("")}</div>
+      <div class="corner"><span class="req-status ${esc(r.stato)}">${esc(REQ_BADGES[r.stato] || r.stato)}</span>
+        ${r.plex ? `<span class="on-plex">Su Plex${r.type === "tv" && r.plex.stagioni ? ` · ${r.plex.stagioni} st.` : ""}</span>` : ""}</div>
+      ${r.download ? progressHtml(r.download) : `<div class="logos">${(r.platforms || []).map(logoHtml).join("")}</div>`}
       <span class="glare"></span>
     </div>
     <h3>${esc(r.title)}</h3>
+    ${info ? `<span class="sub">${esc(info)}</span>` : ""}
     <span class="meta"><b>Richiesto ${esc(when)}</b> · ${r.type === "movie" ? "Radarr" : "Sonarr"}</span>
   </button>`;
 }
 
-async function renderRequests() {
+let requestsTimer = null;
+
+async function renderRequests(silent = false) {
   if (!state.requestsLoaded) {
-    content.innerHTML = `<section class="block"><div class="grid">${'<div class="card skeleton"><div class="poster"></div><h3></h3><span class="meta"></span></div>'.repeat(6)}</div></section>`;
+    if (!silent) content.innerHTML = `<section class="block"><div class="grid">${'<div class="card skeleton"><div class="poster"></div><h3></h3><span class="meta"></span></div>'.repeat(6)}</div></section>`;
     try {
       const d = await (await fetch("/api/richieste")).json();
       state.requests = d.richieste || [];
@@ -405,12 +613,24 @@ async function renderRequests() {
   }
   if (state.view !== "richieste") return;
   $("#empty").hidden = true;
-  content.innerHTML = state.requests.length
+  const list = state.requests;
+  const active = list.filter((r) => r.download).length;
+  content.innerHTML = list.length
     ? `<section class="block">
-        <div class="block-head"><h2>Le mie richieste</h2><span class="count">${state.requests.length} ${state.requests.length === 1 ? "titolo" : "titoli"}</span></div>
-        <div class="grid">${state.requests.map(requestCardHtml).join("")}</div>
+        <div class="block-head"><h2>Le mie richieste</h2><span class="count">${list.length} ${list.length === 1 ? "titolo" : "titoli"}${active ? ` · ${active} in download` : ""}</span></div>
+        <div class="grid">${list.map(requestCardHtml).join("")}</div>
       </section>`
     : `<div class="req-empty"><h3>Nessuna richiesta, per ora</h3><p>Apri un titolo e premi “Richiedi”: i film vanno a Radarr, le serie a Sonarr.</p></div>`;
+  if (silent) content.querySelectorAll(".card").forEach((c) => { c.style.animation = "none"; });
+  // Con download in corso aggiorna i progressi ogni 15 secondi
+  clearTimeout(requestsTimer);
+  if (active) {
+    requestsTimer = setTimeout(() => {
+      if (state.view !== "richieste") return;
+      state.requestsLoaded = false;
+      renderRequests(true);
+    }, 15000);
+  }
 }
 
 function openDetail(id) {
@@ -422,6 +642,8 @@ function openDetail(id) {
   requestMsg("");
   $("#d-play").hidden = true;
   $("#d-trailer").hidden = true;
+  $("#d-seasons").hidden = true;
+  state.seasons = null;
   loadTrailer(i).then((t) => {
     if (!t || dlg.dataset.id !== id) return;
     $("#d-play").hidden = false;
@@ -574,7 +796,12 @@ $("#detail").addEventListener("click", (e) => {
   if (e.target.matches("[data-close]") || e.target === e.currentTarget) e.currentTarget.close();
 });
 $("#detail").addEventListener("close", stopTrailer);
-$("#d-request").addEventListener("click", sendRequest);
+$("#d-request").addEventListener("click", () => {
+  const i = findItem($("#detail").dataset.id);
+  if (i?.type === "tv") openSeasons();
+  else sendRequest();
+});
+$("#d-more").addEventListener("click", openSeasons);
 
 setView(state.view);
 loadServizi();

@@ -38,6 +38,8 @@ class Settings:
     tv_days: int = field(default_factory=lambda: _int("TV_DAYS", 30))
     # Pagine di TMDB discover lette per ogni ricerca (20 titoli per pagina)
     pages: int = field(default_factory=lambda: _int("PAGES", 5))
+    # Giorni in avanti mostrati in "Prossimamente"
+    upcoming_days: int = field(default_factory=lambda: _int("UPCOMING_DAYS", 60))
     refresh_minutes: int = field(default_factory=lambda: _int("REFRESH_MINUTES", 60))
     data_dir: str = field(default_factory=lambda: os.getenv("DATA_DIR", "/data"))
     # Richieste: i film vanno a Radarr, le serie a Sonarr (facoltativi)
@@ -50,6 +52,8 @@ class Settings:
     sonarr_quality_profile: str = field(default_factory=lambda: os.getenv("SONARR_QUALITY_PROFILE", "").strip())
     sonarr_root_folder: str = field(default_factory=lambda: os.getenv("SONARR_ROOT_FOLDER", "").strip())
     sonarr_language_profile: str = field(default_factory=lambda: os.getenv("SONARR_LANGUAGE_PROFILE", "").strip())
+    plex_url: str = field(default_factory=lambda: os.getenv("PLEX_URL", "").strip().rstrip("/"))
+    plex_token: str = field(default_factory=lambda: os.getenv("PLEX_TOKEN", "").strip())
     enabled_platforms: list[str] = field(
         default_factory=lambda: [
             p.strip()

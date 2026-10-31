@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.arr import ArrError, Radarr, Requests, Sonarr
 from app.catalog import Catalog
+from app.plex import Plex
 from app.config import Settings
 from tests import mock_arr, mock_tmdb
 
@@ -18,7 +19,10 @@ def _mock_client(app, **kw):
 @pytest.fixture
 def services(tmp_path, monkeypatch):
     mock_arr.radarr.state.movies = []
+    mock_arr.radarr.state.queue = []
     mock_arr.sonarr.state.series = []
+    mock_arr.sonarr.state.queue = []
+    mock_arr.sonarr.state.commands = []
     s = Settings()
     s.tmdb_api_key = "test"
     s.data_dir = str(tmp_path)
@@ -34,6 +38,9 @@ def services(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "catalog", cat)
     monkeypatch.setattr(main, "radarr", radarr)
     monkeypatch.setattr(main, "sonarr", sonarr)
+    plex = Plex("http://plex", mock_arr.PLEX_TOKEN)
+    plex._client = _mock_client(mock_arr.plex, headers={"X-Plex-Token": mock_arr.PLEX_TOKEN})
+    monkeypatch.setattr(main, "plex", plex)
     monkeypatch.setattr(main, "requests", Requests(str(tmp_path)))
     return TestClient(main.app)
 
@@ -45,7 +52,7 @@ def test_trailer_prefers_italian(services):
 
 
 def test_request_movie_goes_to_radarr(services):
-    assert services.get("/api/servizi").json() == {"radarr": True, "sonarr": True}
+    assert services.get("/api/servizi").json() == {"radarr": True, "sonarr": True, "plex": True}
     assert services.get("/api/richieste/movie-1001").json()["stato"] == "assente"
 
     r = services.post("/api/richieste", json={"id": "movie-1001"})
@@ -69,6 +76,7 @@ def test_request_series_goes_to_sonarr(services):
     added = mock_arr.sonarr.state.series[0]
     assert added["tvdbId"] == 902001 and added["languageProfileId"] == 1
     assert added["addOptions"]["searchForMissingEpisodes"]
+    assert [x["monitored"] for x in added["seasons"]] == [False, True, True, True]  # speciali escluse
 
     added["statistics"] = {"episodeFileCount": 3, "percentOfEpisodes": 50}
     assert services.get("/api/richieste/tv-2001").json()["stato"] == "parziale"
@@ -96,3 +104,60 @@ def test_index_busts_cache(services):
     assert "immutable" in services.get(f"/static/app.js?v={v}").headers["cache-control"]
     assert services.get("/static/app.js").headers["cache-control"] == "no-cache"
     assert "versione" in services.get("/api/stato").json()
+
+
+def test_request_selected_seasons_then_more(services):
+    r = services.post("/api/richieste", json={"id": "tv-2002", "stagioni": [2]})
+    assert r.status_code == 200
+    series = mock_arr.sonarr.state.series[0]
+    assert {x["seasonNumber"]: x["monitored"] for x in series["seasons"]} == {0: False, 1: False, 2: True, 3: False}
+
+    # Seconda richiesta della stessa serie: aggiunge la stagione 3 e la cerca
+    assert services.post("/api/richieste", json={"id": "tv-2002", "stagioni": [3]}).status_code == 200
+    series = mock_arr.sonarr.state.series[0]
+    assert [x["monitored"] for x in series["seasons"]] == [False, False, True, True]
+    assert mock_arr.sonarr.state.commands == [{"name": "SeasonSearch", "seriesId": 1, "seasonNumber": 3}]
+    assert len(mock_arr.sonarr.state.series) == 1
+    req = services.get("/api/richieste").json()["richieste"][0]
+    assert req["stagioni"] == [2, 3]
+    assert [(x["numero"], x["monitorata"]) for x in req["dettagli"]["stagioni"]] == [(1, False), (2, True), (3, True)]
+
+    assert services.post("/api/richieste", json={"id": "tv-2002", "stagioni": []}).status_code == 400
+
+
+def test_download_progress(services):
+    services.post("/api/richieste", json={"id": "movie-1001"})
+    services.post("/api/richieste", json={"id": "tv-2001"})
+    mock_arr.radarr.state.queue = [{"movieId": 1, "size": 1000, "sizeleft": 250, "timeleft": "00:10:00",
+                                    "status": "downloading", "trackedDownloadState": "downloading"}]
+    mock_arr.sonarr.state.queue = [
+        {"seriesId": 1, "episodeId": 1, "size": 100, "sizeleft": 100, "timeleft": "00:20:00", "status": "queued"},
+        {"seriesId": 1, "episodeId": 2, "size": 300, "sizeleft": 0, "timeleft": "00:00:00", "status": "downloading"},
+    ]
+    by_id = {r["id"]: r for r in services.get("/api/richieste").json()["richieste"]}
+    assert by_id["movie-1001"]["download"]["percentuale"] == 75.0
+    assert by_id["tv-2001"]["download"] == {"percentuale": 75.0, "download": 2, "tempo_rimanente": "00:20:00",
+                                            "in_pausa": False, "in_attesa": False}
+    assert services.get("/api/richieste/movie-1001").json()["download"]["percentuale"] == 75.0
+
+
+def test_plex(services):
+    assert services.get("/api/plex").json() == {"movie": [1002], "tv": [2003]}
+    r = services.get("/api/richieste/tv-2003").json()
+    assert r["plex"]["stagioni"] == 2 and r["plex"]["episodi"] == 14
+    assert r["plex"]["url"].startswith("https://app.plex.tv/desktop/#!/server/abc123/")
+    stagioni = services.get("/api/serie/2003/stagioni").json()["stagioni"]
+    assert [(x["numero"], x["episodi"], x["plex"]) for x in stagioni][:2] == [(1, 8, 8), (2, 8, 6)]
+    assert services.get("/api/richieste/movie-1002").json()["plex"]["titolo"] == "La notte di Roma"
+
+
+def test_prossimamente_and_da_non_perdere(services):
+    d = services.get("/api/catalogo").json()
+    upcoming = {i["id"]: i for i in d["prossimamente"]}
+    assert set(upcoming) == {"movie-1101", "movie-1102", "movie-1103", "movie-1104", "tv-2101", "tv-2102", "tv-2104"}
+    assert upcoming["movie-1103"]["platforms"] == ["apple"]  # dalla casa di produzione
+    assert upcoming["tv-2102"]["badge"] == "Stagione 3"
+    dates = [i["date"] for i in d["prossimamente"]]
+    assert dates == sorted(dates)
+    ratings = [i["rating"] for i in d["da_non_perdere"]]
+    assert ratings == sorted(ratings, reverse=True) and min(ratings) >= 7

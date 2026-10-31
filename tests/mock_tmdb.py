@@ -58,6 +58,28 @@ for n in range(1, 19):
 # Stesso film su piu' piattaforme (verifica dei doppioni)
 MOVIES[1001]["providers"] = [8, 119, 39]
 
+# In arrivo: la piattaforma si ricava dalla nota della data di uscita o dalla casa di produzione
+for n, (days, title, note, company) in enumerate([
+    (3, "Il ritorno del re di picche", "Netflix", ""),
+    (6, "Lungo la costa", "Prime Video", ""),
+    (12, "La cometa", "", "Apple Original Films"),
+    (25, "Fiabe di mezzanotte", "Disney+", ""),
+    (40, "Senza piattaforma", "", "Studio indipendente"),
+    (90, "Troppo lontano", "Netflix", ""),
+], start=101):
+    MOVIES[1000 + n] = {"title": title, "date": (TODAY + timedelta(days=days)).isoformat(), "providers": [],
+                        "note": note, "companies": [company] if company else []}
+SHOWS[2101] = {"title": "Codice zero", "first": (TODAY + timedelta(days=4)).isoformat(), "last": "",
+               "season": 1, "providers": [], "networks": [213]}
+SHOWS[2102] = {"title": "La casa sul lago", "first": "2023-03-01", "last": "2025-05-01", "season": 2,
+               "providers": [337], "next": {"air_date": (TODAY + timedelta(days=9)).isoformat(),
+                                            "season_number": 3, "episode_number": 1}}
+SHOWS[2103] = {"title": "Episodi settimanali", "first": "2024-01-01", "last": (TODAY - timedelta(days=3)).isoformat(),
+               "season": 2, "providers": [8], "next": {"air_date": (TODAY + timedelta(days=4)).isoformat(),
+                                                        "season_number": 2, "episode_number": 5}}
+SHOWS[2104] = {"title": "Orbita", "first": (TODAY + timedelta(days=20)).isoformat(), "last": "",
+               "season": 1, "providers": [], "networks": [2552]}
+
 
 def color(seed: str) -> tuple[str, str]:
     h = hashlib.md5(seed.encode()).hexdigest()
@@ -148,7 +170,9 @@ def movie(mid: int):
         "vote_average": round(r.uniform(5.8, 8.6), 1), "vote_count": r.randint(40, 4000),
         "popularity": r.uniform(10, 400),
         "watch/providers": _wp(m["providers"]),
-        "release_dates": {"results": [{"iso_3166_1": "IT", "release_dates": [{"type": 4, "release_date": m["date"] + "T00:00:00.000Z"}]}]},
+        "release_dates": {"results": [{"iso_3166_1": "IT", "release_dates": [
+            {"type": 4, "release_date": m["date"] + "T00:00:00.000Z", "note": m.get("note", "")}]}]},
+        "production_companies": [{"name": c} for c in m.get("companies", [])],
     }
 
 
@@ -161,9 +185,13 @@ def tv(sid: int):
         "overview": "Una serie corale che segue le vite intrecciate di un gruppo di persone alle prese con un mistero che cambierà tutto.",
         "poster_path": f"/p{sid}.svg", "backdrop_path": f"/b{sid}.svg",
         "first_air_date": s["first"], "number_of_seasons": s["season"],
-        "last_episode_to_air": {"air_date": s["last"], "season_number": s["season"], "episode_number": 3},
-        "seasons": [{"season_number": n, "air_date": s["first"] if n == 1 else (TODAY - timedelta(days=r.choice([5, 60]))).isoformat()}
-                    for n in range(1, s["season"] + 1)],
+        "last_episode_to_air": {"air_date": s["last"], "season_number": s["season"], "episode_number": 3} if s["last"] else None,
+        "next_episode_to_air": s.get("next"),
+        "networks": [{"id": n} for n in s.get("networks", [])],
+        "seasons": [{"season_number": 0, "name": "Speciali", "episode_count": 2}] + [
+            {"season_number": n, "name": f"Stagione {n}", "episode_count": 8,
+             "air_date": s["first"] if n == 1 else (TODAY - timedelta(days=r.choice([5, 60]))).isoformat()}
+            for n in range(1, s["season"] + 1)],
         "genres": [{"name": g} for g in r.sample(GENRES, 2)],
         "vote_average": round(r.uniform(6, 9), 1), "vote_count": r.randint(40, 4000),
         "popularity": r.uniform(10, 400),

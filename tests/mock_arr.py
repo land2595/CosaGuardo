@@ -4,6 +4,8 @@ Avvio:  uvicorn tests.mock_arr:radarr --port 7878  e  uvicorn tests.mock_arr:son
 Chiave API: "test".
 """
 
+import os
+
 from fastapi import FastAPI, Header, HTTPException, Request
 
 KEY = "test"
@@ -20,6 +22,20 @@ def _common(app: FastAPI):
         _check(x_api_key)
         return [{"id": 1, "name": "Any"}, {"id": 4, "name": "HD-1080p"}]
 
+    @app.get("/api/v3/queue")
+    def queue(x_api_key: str = Header(None)):
+        _check(x_api_key)
+        records = list(app.state.queue)
+        if os.getenv("MOCK_DEMO"):
+            # Modalita' dimostrativa: tutto cio' che e' stato aggiunto risulta in download
+            items = getattr(app.state, "movies", None) or getattr(app.state, "series", None) or []
+            field = "movieId" if hasattr(app.state, "movies") else "seriesId"
+            for n, it in enumerate(items):
+                records.append({field: it["id"], "size": 4_000_000_000, "sizeleft": 4_000_000_000 * (0.2 + 0.25 * (n % 3)),
+                                "timeleft": f"00:{12 + 9 * n:02d}:00", "status": "downloading",
+                                "trackedDownloadState": "downloading"})
+        return {"page": 1, "totalRecords": len(records), "records": records}
+
     @app.get("/api/v3/rootfolder")
     def roots(x_api_key: str = Header(None)):
         _check(x_api_key)
@@ -29,6 +45,7 @@ def _common(app: FastAPI):
 radarr = FastAPI()
 _common(radarr)
 radarr.state.movies = []
+radarr.state.queue = []
 
 
 @radarr.get("/api/v3/movie")
@@ -60,6 +77,8 @@ async def add_movie(request: Request, x_api_key: str = Header(None)):
 sonarr = FastAPI()
 _common(sonarr)
 sonarr.state.series = []
+sonarr.state.queue = []
+sonarr.state.commands = []
 
 
 @sonarr.get("/api/v3/languageprofile")
@@ -78,7 +97,8 @@ def series(tvdbId: int | None = None, x_api_key: str = Header(None)):
 def series_lookup(term: str, x_api_key: str = Header(None)):
     _check(x_api_key)
     tvdb = int(term.split(":")[1])
-    return [{"title": f"Serie {tvdb}", "tvdbId": tvdb, "year": 2026, "titleSlug": f"serie-{tvdb}", "seasons": []}]
+    seasons = [{"seasonNumber": n, "monitored": False} for n in range(0, 4)]
+    return [{"title": f"Serie {tvdb}", "tvdbId": tvdb, "year": 2026, "titleSlug": f"serie-{tvdb}", "seasons": seasons}]
 
 
 @sonarr.post("/api/v3/series", status_code=201)
@@ -88,6 +108,68 @@ async def add_series(request: Request, x_api_key: str = Header(None)):
     for f in ("qualityProfileId", "rootFolderPath", "tvdbId", "languageProfileId"):
         if f not in body:
             raise HTTPException(400, f"manca {f}")
-    body |= {"id": len(sonarr.state.series) + 1, "statistics": {"episodeFileCount": 0, "percentOfEpisodes": 0}}
+    if "monitor" in body.get("addOptions", {}):
+        raise HTTPException(400, "con monitor le stagioni scelte verrebbero ignorate")
+    for season in body["seasons"]:
+        season["statistics"] = {"episodeFileCount": 0, "episodeCount": 8 if season["monitored"] else 0,
+                                "totalEpisodeCount": 8}
+    body |= {"id": len(sonarr.state.series) + 1,
+             "statistics": {"episodeFileCount": 0, "episodeCount": 8, "percentOfEpisodes": 0}}
     sonarr.state.series.append(body)
     return body
+
+
+@sonarr.put("/api/v3/series/{sid}")
+async def update_series(sid: int, request: Request, x_api_key: str = Header(None)):
+    _check(x_api_key)
+    body = await request.json()
+    sonarr.state.series = [body if s["id"] == sid else s for s in sonarr.state.series]
+    return body
+
+
+@sonarr.post("/api/v3/command", status_code=201)
+async def command(request: Request, x_api_key: str = Header(None)):
+    _check(x_api_key)
+    sonarr.state.commands.append(await request.json())
+    return {"id": len(sonarr.state.commands)}
+
+
+# ---------------------------------------------------------------- Plex
+
+plex = FastAPI()
+PLEX_TOKEN = "plex-test"
+plex.state.library = {
+    "movie": [{"ratingKey": "11", "title": "La notte di Roma", "Guid": [{"id": "tmdb://1002"}], "viewCount": 1}],
+    "show": [{"ratingKey": "21", "title": "Serie su Plex", "childCount": 2, "leafCount": 14, "viewedLeafCount": 3,
+              "Guid": [{"id": "tvdb://902003"}, {"id": "tmdb://2003"}]}],
+}
+
+
+def _plex(token: str | None):
+    if token != PLEX_TOKEN:
+        raise HTTPException(401)
+
+
+@plex.get("/identity")
+def identity(x_plex_token: str = Header(None)):
+    _plex(x_plex_token)
+    return {"MediaContainer": {"machineIdentifier": "abc123"}}
+
+
+@plex.get("/library/sections")
+def sections(x_plex_token: str = Header(None)):
+    _plex(x_plex_token)
+    return {"MediaContainer": {"Directory": [{"key": "1", "type": "movie"}, {"key": "2", "type": "show"},
+                                             {"key": "3", "type": "artist"}]}}
+
+
+@plex.get("/library/sections/{key}/all")
+def section_all(key: str, x_plex_token: str = Header(None)):
+    _plex(x_plex_token)
+    return {"MediaContainer": {"Metadata": plex.state.library["movie" if key == "1" else "show"]}}
+
+
+@plex.get("/library/metadata/{rk}/children")
+def children(rk: str, x_plex_token: str = Header(None)):
+    _plex(x_plex_token)
+    return {"MediaContainer": {"Metadata": [{"index": 1, "leafCount": 8}, {"index": 2, "leafCount": 6}]}}

@@ -11,6 +11,7 @@ services:
       REFRESH_MINUTES: ${REFRESH_MINUTES:-60}
       MOVIE_DAYS: ${MOVIE_DAYS:-90}
       TV_DAYS: ${TV_DAYS:-30}
+      UPCOMING_DAYS: ${UPCOMING_DAYS:-60}
       PLATFORMS: ${PLATFORMS:-netflix,prime,disney,paramount,sky,apple,timvision,raiplay,mediaset,discovery}
       # Facoltativi: richieste dei film a Radarr e delle serie a Sonarr
       RADARR_URL: ${RADARR_URL:-}
@@ -21,6 +22,9 @@ services:
       SONARR_API_KEY: ${SONARR_API_KEY:-}
       SONARR_QUALITY_PROFILE: ${SONARR_QUALITY_PROFILE:-}
       SONARR_ROOT_FOLDER: ${SONARR_ROOT_FOLDER:-}
+      # Facoltativi: Plex, per vedere cosa hai gia'
+      PLEX_URL: ${PLEX_URL:-}
+      PLEX_TOKEN: ${PLEX_TOKEN:-}
     volumes:
       - cosaguardo-data:/data
 

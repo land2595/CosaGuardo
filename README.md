@@ -8,14 +8,21 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 - **Nessun doppione**: un titolo disponibile su più piattaforme compare una sola volta, con il logo di ciascuna piattaforma.
 - **Sempre aggiornato**: il catalogo si aggiorna da solo ogni ora (configurabile), e la pagina si ricarica quando ci sono novità.
 - **Di tendenza in Italia**: la classifica dei titoli più visti della settimana disponibili sulle piattaforme italiane.
+- **Prossimamente**: i film e le serie in arrivo sulle piattaforme italiane nei prossimi 60 giorni, con la data di uscita e un calendario per settimana e per mese.
+- **Da non perdere**: i film e le serie con i voti più alti usciti di recente.
 - Filtri per film o serie e per piattaforma, ricerca per titolo, schede con trama, voto e link "dove guardarlo".
 - Le serie hanno un'etichetta che dice cosa c'è di nuovo: *Nuova serie*, *Nuova stagione* o *Nuovi episodi*.
 - **Trailer** nella scheda di ogni titolo, in italiano quando c'è.
-- **Richieste**: un pulsante "Richiedi" manda i film a **Radarr** e le serie a **Sonarr**, che li cercano e li scaricano. La sezione *Le mie richieste* mostra lo stato di ognuna (richiesto, in arrivo, disponibile).
+- **Richieste**: un pulsante "Richiedi" manda i film a **Radarr** e le serie a **Sonarr**, che li cercano e li scaricano. Per le serie scegli se richiedere tutte le stagioni o solo alcune. La sezione *Le mie richieste* mostra lo stato di ognuna, il progresso del download con il tempo rimanente e gli episodi scaricati per stagione.
+- **Plex**: se colleghi il tuo server Plex, CosaGuardo segna i titoli che hai già, mostra quante stagioni ed episodi ci sono e apre il titolo in Plex con un clic.
 
 ![Home](docs/home.png)
 
 ![Locandine animate e filtro per piattaforma](docs/piattaforme.png)
+
+| Prossimamente | Da non perdere |
+|---|---|
+| ![Prossimamente](docs/prossimamente.png) | ![Da non perdere](docs/da-non-perdere.png) |
 
 | Di tendenza in Italia | Scheda del titolo | Mobile |
 |---|---|---|
@@ -84,9 +91,26 @@ docker run -d --name cosaguardo -p 8080:8080 -v cosaguardo-data:/data --restart 
 
 Puoi configurarne anche uno solo. Nella scheda di un titolo compare il pulsante **Richiedi a Radarr** (per i film) o **Richiedi a Sonarr** (per le serie): il titolo viene aggiunto con monitoraggio attivo e la ricerca parte subito. Se è già presente, il pulsante mostra lo stato invece di aggiungerlo di nuovo.
 
+![Scelta delle stagioni](docs/stagioni.png)
+
+- **Stagioni**: per le serie si apre l'elenco delle stagioni, con il numero di episodi e quanti ne hai già su Plex. Puoi sceglierne alcune o tutte. Più avanti puoi aggiungerne altre con **＋ Altre stagioni**: Sonarr le monitora e le cerca subito.
+- **Download**: la scheda e *Le mie richieste* mostrano la percentuale, il tempo rimanente e, per le serie, gli episodi scaricati per ogni stagione. Mentre c'è un download in corso la pagina si aggiorna da sola ogni 15 secondi.
+
 - Usa l'indirizzo IP del computer o NAS, non `localhost`: dentro il container `localhost` è il container stesso. Se Radarr e Sonarr sono nella stessa rete Docker di CosaGuardo puoi usare il nome del container, ad esempio `http://radarr:7878`.
 - Se non indichi profilo di qualità e cartella, vengono usati i primi configurati in Radarr/Sonarr. Puoi sceglierli per nome con `RADARR_QUALITY_PROFILE=HD-1080p` e `RADARR_ROOT_FOLDER=/movies` (lo stesso per Sonarr).
 - Funziona con Radarr v3 o successivi e con Sonarr v3 e v4.
+
+## Collegare Plex
+
+Con Plex collegato, le locandine dei titoli che hai già mostrano **Su Plex**, e la scheda dice quante stagioni ed episodi hai e ha il pulsante **Apri in Plex**. Servono l'indirizzo del server e il token:
+
+```bash
+  -e PLEX_URL=http://192.168.1.10:32400 -e PLEX_TOKEN=il_tuo_token \
+```
+
+Per trovare il token: apri Plex Web, su un qualsiasi film clicca **⋯ → Ottieni informazioni → Visualizza XML**. Nell'indirizzo della pagina che si apre, il token è il valore dopo `X-Plex-Token=`. ([Guida ufficiale](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))
+
+CosaGuardo legge la libreria ogni 10 minuti e riconosce i titoli dagli id TMDB e TVDB, quindi funziona con l'agente Plex predefinito.
 
 ## Configurazione
 
@@ -106,6 +130,8 @@ Tutte le opzioni sono variabili d'ambiente (`-e NOME=valore` con `docker run`, o
 | `SONARR_URL` / `SONARR_API_KEY` | | Indirizzo e chiave API di Sonarr, per richiedere le serie. |
 | `SONARR_QUALITY_PROFILE` / `SONARR_ROOT_FOLDER` | il primo | Profilo di qualità e cartella delle serie (nome o id). |
 | `SONARR_LANGUAGE_PROFILE` | il primo | Solo Sonarr v3: profilo lingua (nome o id). |
+| `PLEX_URL` / `PLEX_TOKEN` | | Indirizzo del server Plex e token, per vedere cosa hai già. |
+| `UPCOMING_DAYS` | `60` | Quanti giorni avanti guarda la sezione *Prossimamente*. |
 | `PUID` / `PGID` | `1000` / `1000` | Utente e gruppo con cui gira l'app e a cui appartengono i file in `/data`. Utile se monti una cartella del NAS (es. `-v /percorso/cosaguardo:/data`). |
 
 Hulu non è presente perché non esiste in Italia: i suoi contenuti escono su Disney+.
@@ -120,20 +146,27 @@ Ad ogni aggiornamento, CosaGuardo:
 4. per ogni titolo legge la scheda in italiano e le piattaforme italiane su cui è disponibile, poi unisce i doppioni;
 5. ordina tutto dalla data di uscita più recente e salva il risultato in `/data/catalogo.json`, così al riavvio la pagina è subito pronta.
 
+Per **Prossimamente** cerca i film con uscita digitale o TV in Italia nelle prossime settimane e le serie (nuove o con una nuova stagione) che debuttano sulle reti delle piattaforme. **Da non perdere** prende i film dell'ultimo anno e le serie degli ultimi sei mesi con voto almeno 7 e un numero minimo di voti, così non compaiono titoli votati da poche persone.
+
 I dati di disponibilità arrivano da [JustWatch](https://www.justwatch.com/it) tramite le API di [TMDB](https://www.themoviedb.org).
 
 **Un limite da sapere:** TMDB non indica il giorno in cui un titolo è stato aggiunto a una piattaforma. Per i film CosaGuardo usa la data di uscita digitale in Italia quando c'è (altrimenti la data di uscita), per le serie la data dell'ultimo episodio. Un film vecchio appena aggiunto al catalogo di una piattaforma quindi non compare tra le ultime uscite.
+
+Per i titoli **in arrivo** TMDB non sa ancora su quale piattaforma usciranno. CosaGuardo lo ricava dalla nota di uscita italiana, dalla casa di produzione (es. Netflix, Disney, Apple) o dalla rete che produce la serie. Qualche titolo, soprattutto Sky Original, può quindi comparire senza piattaforma o mancare.
 
 ## API
 
 | Endpoint | Descrizione |
 |---|---|
-| `GET /api/catalogo` | Ultime uscite, tendenze e piattaforme. Filtri opzionali: `tipo=movie\|tv`, `piattaforma=netflix` (ripetibile), `q=titolo`. |
+| `GET /api/catalogo` | Ultime uscite, prossimamente, da non perdere, tendenze e piattaforme. Filtri opzionali: `tipo=movie\|tv`, `piattaforma=netflix` (ripetibile), `q=titolo`. |
 | `GET /api/stato` | Ora dell'ultimo aggiornamento ed eventuali errori. |
 | `POST /api/aggiorna` | Forza un aggiornamento immediato. |
 | `GET /api/trailer/{movie\|tv}/{id}` | Il trailer YouTube del titolo, in italiano se disponibile. |
-| `GET /api/richieste` | Le richieste fatte, con lo stato aggiornato da Radarr e Sonarr. |
-| `POST /api/richieste` | Richiede un titolo (`{"id": "movie-123"}`): i film vanno a Radarr, le serie a Sonarr. |
+| `GET /api/richieste` | Le richieste fatte, con stato, download in corso e presenza su Plex. |
+| `GET /api/richieste/{id}` | Stato di un titolo (es. `tv-123`): Radarr/Sonarr, download e Plex. |
+| `GET /api/serie/{tmdb_id}/stagioni` | Le stagioni di una serie, con episodi richiesti, scaricati e presenti su Plex. |
+| `POST /api/richieste` | Richiede un titolo (`{"id": "movie-123"}`): i film vanno a Radarr, le serie a Sonarr. Per le serie puoi indicare le stagioni: `{"id": "tv-123", "stagioni": [1, 2]}` (senza, le richiede tutte). |
+| `GET /api/plex` | Gli id TMDB dei film e delle serie già presenti su Plex. |
 | `POST /api/chiave` | Imposta la chiave TMDB (solo se non è ancora configurata). |
 | `GET /health` | Controllo di salute per Docker. |
 
@@ -150,10 +183,12 @@ pytest -q tests
 uvicorn tests.mock_tmdb:app --port 9000 &
 uvicorn tests.mock_arr:radarr --port 7878 &
 uvicorn tests.mock_arr:sonarr --port 8989 &
+uvicorn tests.mock_arr:plex --port 32400 &
 TMDB_API_KEY=test TMDB_BASE_URL=http://127.0.0.1:9000 \
 TMDB_IMAGE_URL=http://127.0.0.1:9000/img DATA_DIR=./data \
 RADARR_URL=http://127.0.0.1:7878 RADARR_API_KEY=test \
 SONARR_URL=http://127.0.0.1:8989 SONARR_API_KEY=test \
+PLEX_URL=http://127.0.0.1:32400 PLEX_TOKEN=plex-test \
 uvicorn app.main:app --reload --port 8080
 ```
 

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from .arr import ASSENTE, SCONOSCIUTO, ArrError, Radarr, Requests, Sonarr
 from .catalog import Catalog, TMDBError
+from .plex import Plex, PlexError
 from .config import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -26,6 +27,7 @@ radarr = Radarr(settings.radarr_url, settings.radarr_api_key,
 sonarr = Sonarr(settings.sonarr_url, settings.sonarr_api_key,
                 settings.sonarr_quality_profile, settings.sonarr_root_folder,
                 language_profile=settings.sonarr_language_profile)
+plex = Plex(settings.plex_url, settings.plex_token)
 requests = Requests(settings.data_dir)
 STATIC = Path(__file__).parent / "static"
 
@@ -93,6 +95,8 @@ def get_catalogo(
         "piattaforme": d.get("piattaforme", {}),
         "novita": _filter(d.get("novita", []), tipo, piattaforma, q),
         "tendenze": _filter(d.get("tendenze", []), tipo, piattaforma, q),
+        "prossimamente": _filter(d.get("prossimamente", []), tipo, piattaforma, q),
+        "da_non_perdere": _filter(d.get("da_non_perdere", []), tipo, piattaforma, q),
     }
 
 
@@ -163,29 +167,60 @@ async def _arr_id(req_or_item: dict) -> int | None:
     return req_or_item.get("tvdb_id") or await catalog.tvdb_id(req_or_item["tmdb_id"])
 
 
+async def _safe(coro, default=None):
+    """Interroga un servizio esterno senza far fallire tutta la risposta."""
+    try:
+        return await coro
+    except (ArrError, PlexError, TMDBError) as e:
+        log.warning("%s", e)
+        return default
+
+
+async def _plex_find(kind: str, tmdb_id: int, tvdb_id: int | None = None) -> dict | None:
+    if not plex.configured:
+        return None
+    return await _safe(plex.find(kind, tmdb_id, tvdb_id))
+
+
 @app.get("/api/servizi")
 def get_servizi():
-    return {"radarr": radarr.configured, "sonarr": sonarr.configured}
+    return {"radarr": radarr.configured, "sonarr": sonarr.configured, "plex": plex.configured}
+
+
+@app.get("/api/plex")
+async def get_plex():
+    """Id TMDB dei titoli gia' su Plex, per segnarli nelle liste."""
+    if not plex.configured:
+        return {"movie": [], "tv": []}
+    idx = await _safe(plex.index(), {"movie": {}, "tv": {}})
+    return {"movie": list(idx["movie"]), "tv": list(idx["tv"])}
 
 
 @app.get("/api/richieste")
 async def get_richieste():
-    """Le richieste fatte, con lo stato aggiornato da Radarr e Sonarr."""
-    async def lib(svc):
-        if not svc.configured:
-            return None
-        try:
-            return await svc.library()
-        except ArrError as e:
-            log.warning("%s", e)
-            return None
+    """Le richieste fatte, con stato, download in corso e presenza su Plex."""
+    async def maybe(svc, method):
+        return await _safe(getattr(svc, method)()) if svc.configured else None
 
-    movies, shows = await asyncio.gather(lib(radarr), lib(sonarr))
+    movies, shows, mq, sq, pidx = await asyncio.gather(
+        maybe(radarr, "library"), maybe(sonarr, "library"), maybe(radarr, "queue"), maybe(sonarr, "queue"),
+        maybe(plex, "index"),
+    )
     out = []
     for r in requests.items:
-        library, key = (movies, r["tmdb_id"]) if r["type"] == "movie" else (shows, r.get("tvdb_id"))
-        stato = SCONOSCIUTO if library is None else library.get(key, ASSENTE)
-        out.append(r | {"stato": stato})
+        movie = r["type"] == "movie"
+        library, queue = (movies, mq) if movie else (shows, sq)
+        info = None if library is None else library.get(r["tmdb_id"] if movie else r.get("tvdb_id"))
+        stato = SCONOSCIUTO if library is None else (info["stato"] if info else ASSENTE)
+        on_plex = None
+        if pidx:
+            on_plex = pidx[r["type"]].get(r["tmdb_id"]) or (None if movie else pidx["tvdb"].get(r.get("tvdb_id")))
+        out.append(r | {
+            "stato": stato,
+            "dettagli": info,
+            "download": (queue or {}).get(info["arr_id"]) if info else None,
+            "plex": on_plex,
+        })
     return {"richieste": out, "servizi": get_servizi()}
 
 
@@ -195,36 +230,67 @@ async def get_richiesta(item_id: str):
     if not item:
         raise HTTPException(404, "Titolo non trovato.")
     svc = _service(item["type"])
-    if not svc.configured:
-        return {"stato": None, "configurato": False, "servizio": svc.name}
+    res: dict = {"stato": None, "configurato": svc.configured, "servizio": svc.name, "dettagli": None,
+                 "download": None, "plex": None}
     try:
         arr_id = await _arr_id(item)
-        stato = await svc.status(arr_id) if arr_id else ASSENTE
-    except (ArrError, TMDBError) as e:
-        return {"stato": SCONOSCIUTO, "configurato": True, "servizio": svc.name, "errore": str(e)}
-    return {"stato": stato, "configurato": True, "servizio": svc.name}
+    except TMDBError as e:
+        return res | {"stato": SCONOSCIUTO, "errore": str(e)}
+    res["plex"] = await _plex_find(item["type"], item["tmdb_id"], arr_id if item["type"] == "tv" else None)
+    if not svc.configured:
+        return res
+    try:
+        info = await svc.get(arr_id) if arr_id else None
+        queue = await svc.queue() if info else {}
+    except ArrError as e:
+        return res | {"stato": SCONOSCIUTO, "errore": str(e)}
+    return res | {"stato": info["stato"] if info else ASSENTE, "dettagli": info,
+                  "download": queue.get(info["arr_id"]) if info else None}
+
+
+@app.get("/api/serie/{tmdb_id}/stagioni")
+async def get_stagioni(tmdb_id: int):
+    """Stagioni di una serie con lo stato in Sonarr e su Plex, per scegliere cosa richiedere."""
+    try:
+        seasons, tvdb = await asyncio.gather(catalog.tv_seasons(tmdb_id), catalog.tvdb_id(tmdb_id))
+    except TMDBError as e:
+        raise HTTPException(502, str(e)) from e
+    in_sonarr = await _safe(sonarr.get(tvdb)) if sonarr.configured and tvdb else None
+    on_plex = await _plex_find("tv", tmdb_id, tvdb)
+    plex_seasons = await _safe(plex.seasons(on_plex["rating_key"]), {}) if on_plex else {}
+    by_n = {s["numero"]: s for s in (in_sonarr or {}).get("stagioni", [])}
+    return {"stagioni": [
+        s | {"sonarr": by_n.get(s["numero"]), "plex": plex_seasons.get(s["numero"])} for s in seasons
+    ]}
 
 
 class NuovaRichiesta(BaseModel):
     id: str
+    stagioni: list[int] | None = None  # solo serie: None = tutte
 
 
 @app.post("/api/richieste")
 async def post_richiesta(body: NuovaRichiesta):
-    item = catalog.find_item(body.id)
+    item = catalog.find_item(body.id) or requests.get(body.id)
     if not item:
         raise HTTPException(404, "Titolo non trovato.")
     svc = _service(item["type"])
     if not svc.configured:
         raise HTTPException(400, f"{svc.name} non e' configurato.")
+    if body.stagioni is not None and not body.stagioni:
+        raise HTTPException(400, "Scegli almeno una stagione.")
     try:
         arr_id = await _arr_id(item)
         if not arr_id:
             raise HTTPException(400, "Questa serie non ha un id TVDB, Sonarr non puo' aggiungerla.")
-        stato = await svc.add(arr_id)
+        if item["type"] == "tv":
+            stato = await sonarr.add(arr_id, body.stagioni)
+        else:
+            stato = await radarr.add(arr_id)
     except (ArrError, TMDBError) as e:
         raise HTTPException(502, str(e)) from e
-    requests.add(item, tvdb_id=arr_id if item["type"] == "tv" else None)
+    requests.add(item, tvdb_id=arr_id if item["type"] == "tv" else None,
+                 seasons=body.stagioni if item["type"] == "tv" else None)
     return {"stato": stato, "servizio": svc.name}
 
 

@@ -16,6 +16,11 @@ from .config import PLATFORMS, Settings
 
 log = logging.getLogger("catalog")
 
+# Reti TMDB delle produzioni originali delle piattaforme (per le serie in arrivo)
+NETWORKS = {213: "netflix", 1024: "prime", 2739: "disney", 453: "disney", 2552: "apple", 4330: "paramount"}
+# Case di produzione che indicano la piattaforma di un film in arrivo
+COMPANY_HINTS = {"netflix": "netflix", "amazon": "prime", "apple original": "apple", "apple studios": "apple",
+                 "disney+": "disney", "paramount+": "paramount", "sky original": "sky", "sky studios": "sky"}
 IMG = os.getenv("TMDB_IMAGE_URL", "https://image.tmdb.org/t/p")
 MONETIZATION = "flatrate|free|ads"
 
@@ -148,16 +153,15 @@ class Catalog:
 
     # ---------------------------------------------------------------- discover
 
-    async def _discover(self, client, kind: str, pages: int, **params) -> list[int]:
-        # "|" = disponibile su almeno una piattaforma (la "," di TMDB significa "su tutte")
-        ids = "|".join(str(i) for i in self._provider_map) or "0"
-        base = {
-            "watch_region": self.s.region,
-            "with_watch_providers": ids,
-            "with_watch_monetization_types": MONETIZATION,
-            "include_adult": "false",
-            **params,
-        }
+    async def _discover(self, client, kind: str, pages: int, providers: bool = True, **params) -> list[int]:
+        base = {"include_adult": "false", **params}
+        if providers:
+            # "|" = disponibile su almeno una piattaforma (la "," di TMDB significa "su tutte")
+            base |= {
+                "watch_region": self.s.region,
+                "with_watch_providers": "|".join(str(i) for i in self._provider_map) or "0",
+                "with_watch_monetization_types": MONETIZATION,
+            }
         out: list[int] = []
         page, total = 1, 1
         while page <= min(pages, total):
@@ -319,11 +323,15 @@ class Catalog:
         novita = [x for x in novita if x["date"] >= (m_since if x["type"] == "movie" else tv_since)]
         novita.sort(key=lambda x: (x["date"], x["popularity"]), reverse=True)
 
-        tendenze = await self._trending(client, today)
+        tendenze, prossimamente, da_non_perdere = await asyncio.gather(
+            self._trending(client, today), self._upcoming(client, today), self._must_see(client, today),
+        )
 
         return {
             "novita": unique_items(novita),
             "tendenze": tendenze,
+            "prossimamente": prossimamente,
+            "da_non_perdere": da_non_perdere,
             "piattaforme": piattaforme,
             "aggiornato": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
@@ -361,6 +369,129 @@ class Catalog:
             it["rank"] = n
         return items
 
+    # ------------------------------------------------------- prossimamente
+
+    def _hint_platforms(self, *texts: str) -> list[str]:
+        found: list[str] = []
+        for t in texts:
+            if not t:
+                continue
+            key = match_platform(t, self.s.enabled_platforms)
+            if not key:
+                low = t.lower()
+                key = next((v for k, v in COMPANY_HINTS.items() if k in low and v in self.s.enabled_platforms), None)
+            if key and key not in found:
+                found.append(key)
+        return found
+
+    async def _upcoming(self, client, today: date) -> list[dict]:
+        """Film e serie in arrivo sulle piattaforme italiane, con la data di uscita."""
+        days = self.s.upcoming_days
+        start = (today + timedelta(days=1)).isoformat()
+        end = (today + timedelta(days=days)).isoformat()
+        networks = "|".join(str(n) for n, k in NETWORKS.items() if k in self.s.enabled_platforms)
+        movie_ids, tv_new, tv_seasons, tv_originals = await asyncio.gather(
+            # Film in uscita in digitale o in TV in Italia
+            self._discover(client, "movie", 3, providers=False, region=self.s.region, with_release_type="4|6",
+                           sort_by="popularity.desc", **{"release_date.gte": start, "release_date.lte": end}),
+            # Serie nuove delle piattaforme
+            self._discover(client, "tv", 2, providers=False, with_networks=networks or "0", sort_by="popularity.desc",
+                           **{"first_air_date.gte": start, "first_air_date.lte": end}),
+            # Nuove stagioni di serie gia' presenti sulle piattaforme italiane
+            self._discover(client, "tv", 3, sort_by="popularity.desc", **{"air_date.gte": start, "air_date.lte": end}),
+            # Nuove stagioni delle produzioni originali
+            self._discover(client, "tv", 2, providers=False, with_networks=networks or "0", sort_by="popularity.desc",
+                           **{"air_date.gte": start, "air_date.lte": end}),
+        )
+        movies, shows = await asyncio.gather(
+            asyncio.gather(*(self._details_for(client, "movie", i) for i in movie_ids)),
+            asyncio.gather(*(self._details_for(client, "tv", i) for i in dedupe(tv_new + tv_seasons + tv_originals))),
+        )
+        t = today.isoformat()
+        items: list[dict] = []
+        for d in movies:
+            if not d:
+                continue
+            out_date, notes = None, []
+            for rd in d.get("release_dates", {}).get("results", []):
+                if rd.get("iso_3166_1") != self.s.region:
+                    continue
+                for x in rd.get("release_dates", []):
+                    day = (x.get("release_date") or "")[:10]
+                    if x.get("type") in (4, 6) and start <= day <= end:
+                        out_date = min(out_date or day, day)
+                        notes.append(x.get("note") or "")
+            if not out_date:
+                continue
+            platforms, link = self._platforms_of(d)
+            platforms = dedupe(platforms + self._hint_platforms(
+                *notes, *(c.get("name", "") for c in d.get("production_companies", []))))
+            if not platforms:
+                continue
+            items.append(self._base_item(d, "movie", platforms, link) | {
+                "title": d.get("title") or d.get("original_title"),
+                "original_title": d.get("original_title"),
+                "date": out_date,
+                "year": out_date[:4],
+                "badge": "Film",
+                "runtime": d.get("runtime"),
+            })
+        for d in shows:
+            if not d:
+                continue
+            first = d.get("first_air_date") or ""
+            nxt = d.get("next_episode_to_air") or {}
+            if first > t:
+                out_date, badge = first, "Nuova serie"
+            elif nxt.get("episode_number") == 1 and (nxt.get("air_date") or "") > t:
+                out_date, badge = nxt["air_date"], f"Stagione {nxt.get('season_number')}"
+            else:
+                continue  # solo episodi settimanali di una stagione gia' iniziata
+            if out_date > end:
+                continue
+            platforms, link = self._platforms_of(d)
+            platforms = dedupe(platforms + [NETWORKS[n["id"]] for n in d.get("networks", [])
+                                            if NETWORKS.get(n.get("id")) in self.s.enabled_platforms])
+            if not platforms:
+                continue
+            items.append(self._base_item(d, "tv", platforms, link) | {
+                "title": d.get("name") or d.get("original_name"),
+                "original_title": d.get("original_name"),
+                "date": out_date,
+                "year": out_date[:4],
+                "badge": badge,
+                "seasons": d.get("number_of_seasons"),
+            })
+        items = unique_items(items)
+        items.sort(key=lambda x: (x["date"], -x["popularity"]))
+        return items
+
+    async def _must_see(self, client, today: date) -> list[dict]:
+        """I titoli recenti con i voti piu' alti, disponibili sulle piattaforme italiane."""
+        movie_ids, tv_ids = await asyncio.gather(
+            self._discover(client, "movie", 2, sort_by="vote_average.desc",
+                           **{"vote_count.gte": 200, "primary_release_date.gte": (today - timedelta(days=365)).isoformat(),
+                              "primary_release_date.lte": today.isoformat()}),
+            self._discover(client, "tv", 3, sort_by="vote_average.desc",
+                           **{"vote_count.gte": 80, "air_date.gte": (today - timedelta(days=180)).isoformat(),
+                              "air_date.lte": today.isoformat()}),
+        )
+        movies, shows = await asyncio.gather(
+            self._build(client, "movie", movie_ids, today), self._build(client, "tv", tv_ids, today),
+        )
+        items = [x for x in unique_items(movies + shows) if x["rating"] >= 7]
+        items.sort(key=lambda x: (x["rating"], x["votes"]), reverse=True)
+        return items[:48]
+
+    async def tv_seasons(self, tmdb_id: int) -> list[dict]:
+        async with self._client() as client:
+            d = await self._get(client, f"/tv/{tmdb_id}")
+        return [
+            {"numero": s["season_number"], "nome": s.get("name"), "episodi": s.get("episode_count") or 0,
+             "data": s.get("air_date")}
+            for s in d.get("seasons", []) if s.get("season_number", 0) > 0
+        ]
+
     # ------------------------------------------------------- trailer e id
 
     async def trailer(self, kind: str, tmdb_id: int) -> dict | None:
@@ -392,7 +523,7 @@ class Catalog:
         return res.get("tvdb_id")
 
     def find_item(self, item_id: str) -> dict | None:
-        for group in ("novita", "tendenze"):
+        for group in ("novita", "tendenze", "prossimamente", "da_non_perdere"):
             for it in self.data.get(group, []):
                 if it["id"] == item_id:
                     return it

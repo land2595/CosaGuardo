@@ -22,8 +22,24 @@ class ArrError(RuntimeError):
     pass
 
 
+def _progress(records: list[dict]) -> dict:
+    """Progresso complessivo di uno o piu' download in coda."""
+    size = sum(r.get("size") or 0 for r in records)
+    left = sum(r.get("sizeleft") or 0 for r in records)
+    lefts = [r.get("timeleft") for r in records if r.get("timeleft")]
+    states = {r.get("trackedDownloadState") or r.get("status") for r in records}
+    return {
+        "percentuale": round((size - left) / size * 100, 1) if size else 0,
+        "download": len(records),
+        "tempo_rimanente": max(lefts) if lefts else None,
+        "in_pausa": states <= {"paused"},
+        "in_attesa": states <= {"queued", "delay", "importPending", "downloadClientUnavailable"},
+    }
+
+
 class ArrClient:
     name = ""
+    id_field = ""
 
     def __init__(self, url: str, api_key: str, quality_profile: str = "", root_folder: str = ""):
         self.url = url
@@ -76,20 +92,41 @@ class ArrClient:
         )
         return {"qualityProfileId": profile["id"], "rootFolderPath": root["path"]}
 
+    async def queue(self) -> dict[int, dict]:
+        """Download in corso, raggruppati per film/serie (id interno di Radarr/Sonarr)."""
+        res = await self._req("GET", "/api/v3/queue", params={"pageSize": 1000})
+        records = res.get("records", []) if isinstance(res, dict) else res or []
+        grouped: dict[int, list] = {}
+        for r in records:
+            if r.get(self.id_field):
+                grouped.setdefault(r[self.id_field], []).append(r)
+        return {k: _progress(v) for k, v in grouped.items()}
+
 
 class Radarr(ArrClient):
     name = "Radarr"
+    id_field = "movieId"
 
     @staticmethod
-    def _state(movie: dict) -> str:
-        return DISPONIBILE if movie.get("hasFile") else RICHIESTO
+    def info(movie: dict) -> dict:
+        file = movie.get("movieFile") or {}
+        return {
+            "stato": DISPONIBILE if movie.get("hasFile") else RICHIESTO,
+            "arr_id": movie.get("id"),
+            "dimensione": movie.get("sizeOnDisk") or file.get("size") or 0,
+            "qualita": ((file.get("quality") or {}).get("quality") or {}).get("name"),
+        }
+
+    async def get(self, tmdb_id: int) -> dict | None:
+        found = await self._req("GET", "/api/v3/movie", params={"tmdbId": tmdb_id})
+        return self.info(found[0]) if found else None
 
     async def status(self, tmdb_id: int) -> str:
-        found = await self._req("GET", "/api/v3/movie", params={"tmdbId": tmdb_id})
-        return self._state(found[0]) if found else ASSENTE
+        found = await self.get(tmdb_id)
+        return found["stato"] if found else ASSENTE
 
-    async def library(self) -> dict[int, str]:
-        return {m["tmdbId"]: self._state(m) for m in await self._req("GET", "/api/v3/movie") or [] if m.get("tmdbId")}
+    async def library(self) -> dict[int, dict]:
+        return {m["tmdbId"]: self.info(m) for m in await self._req("GET", "/api/v3/movie") or [] if m.get("tmdbId")}
 
     async def add(self, tmdb_id: int) -> str:
         current = await self.status(tmdb_id)
@@ -111,29 +148,64 @@ class Radarr(ArrClient):
 
 class Sonarr(ArrClient):
     name = "Sonarr"
+    id_field = "seriesId"
 
     def __init__(self, *args, language_profile: str = "", **kw):
         super().__init__(*args, **kw)
         self.language_profile = language_profile
 
     @staticmethod
-    def _state(series: dict) -> str:
+    def info(series: dict) -> dict:
         stats = series.get("statistics") or {}
         if not stats.get("episodeFileCount"):
-            return RICHIESTO
-        return DISPONIBILE if stats.get("percentOfEpisodes", 0) >= 100 else PARZIALE
+            stato = RICHIESTO
+        else:
+            stato = DISPONIBILE if stats.get("percentOfEpisodes", 0) >= 100 else PARZIALE
+        seasons = []
+        for s in series.get("seasons", []):
+            if s.get("seasonNumber", 0) == 0:
+                continue  # speciali
+            st = s.get("statistics") or {}
+            seasons.append({
+                "numero": s["seasonNumber"],
+                "monitorata": bool(s.get("monitored")),
+                "scaricati": st.get("episodeFileCount", 0),
+                "previsti": st.get("episodeCount", 0),
+                "totali": st.get("totalEpisodeCount", 0),
+            })
+        return {
+            "stato": stato,
+            "arr_id": series.get("id"),
+            "stagioni": seasons,
+            "episodi_scaricati": stats.get("episodeFileCount", 0),
+            "episodi_previsti": stats.get("episodeCount", 0),
+            "dimensione": stats.get("sizeOnDisk", 0),
+        }
+
+    async def _find(self, tvdb_id: int) -> dict | None:
+        found = await self._req("GET", "/api/v3/series", params={"tvdbId": tvdb_id})
+        return found[0] if found else None
+
+    async def get(self, tvdb_id: int) -> dict | None:
+        found = await self._find(tvdb_id)
+        return self.info(found) if found else None
 
     async def status(self, tvdb_id: int) -> str:
-        found = await self._req("GET", "/api/v3/series", params={"tvdbId": tvdb_id})
-        return self._state(found[0]) if found else ASSENTE
+        found = await self.get(tvdb_id)
+        return found["stato"] if found else ASSENTE
 
-    async def library(self) -> dict[int, str]:
-        return {s["tvdbId"]: self._state(s) for s in await self._req("GET", "/api/v3/series") or [] if s.get("tvdbId")}
+    async def library(self) -> dict[int, dict]:
+        return {s["tvdbId"]: self.info(s) for s in await self._req("GET", "/api/v3/series") or [] if s.get("tvdbId")}
 
-    async def add(self, tvdb_id: int) -> str:
-        current = await self.status(tvdb_id)
-        if current != ASSENTE:
-            return current
+    async def add(self, tvdb_id: int, seasons: list[int] | None = None) -> str:
+        """Aggiunge la serie con le stagioni scelte (tutte se None).
+
+        Se la serie c'e' gia', monitora le stagioni in piu' e ne avvia la ricerca.
+        """
+        existing = await self._find(tvdb_id)
+        if existing:
+            return await self._add_seasons(existing, seasons)
+
         found = await self._req("GET", "/api/v3/series/lookup", params={"term": f"tvdb:{tvdb_id}"})
         if not found:
             raise ArrError("Sonarr non trova questa serie.")
@@ -145,13 +217,34 @@ class Sonarr(ArrClient):
             series["languageProfileId"] = lang["id"]
         except ArrError:
             pass
+        for s in series.get("seasons", []):
+            n = s.get("seasonNumber", 0)
+            s["monitored"] = n > 0 and (seasons is None or n in seasons)
         series.update({
             "monitored": True,
             "seasonFolder": True,
-            "addOptions": {"monitor": "all", "searchForMissingEpisodes": True, "searchForCutoffUnmetEpisodes": False},
+            # Senza "monitor" Sonarr rispetta le stagioni monitorate scelte qui sopra
+            "addOptions": {"searchForMissingEpisodes": True, "searchForCutoffUnmetEpisodes": False},
         })
         await self._req("POST", "/api/v3/series", json=series)
-        log.info("Serie aggiunta a Sonarr: %s (tvdb %s)", series.get("title"), tvdb_id)
+        log.info("Serie aggiunta a Sonarr: %s (tvdb %s, stagioni %s)", series.get("title"), tvdb_id, seasons or "tutte")
+        return RICHIESTO
+
+    async def _add_seasons(self, series: dict, seasons: list[int] | None) -> str:
+        new = []
+        for s in series.get("seasons", []):
+            n = s.get("seasonNumber", 0)
+            if n > 0 and (seasons is None or n in seasons) and not s.get("monitored"):
+                s["monitored"] = True
+                new.append(n)
+        if not new:
+            return self.info(series)["stato"]
+        series["monitored"] = True
+        await self._req("PUT", f"/api/v3/series/{series['id']}", json=series)
+        for n in new:
+            await self._req("POST", "/api/v3/command",
+                            json={"name": "SeasonSearch", "seriesId": series["id"], "seasonNumber": n})
+        log.info("Sonarr: aggiunte le stagioni %s a %s", new, series.get("title"))
         return RICHIESTO
 
 
@@ -170,9 +263,14 @@ class Requests:
     def get(self, item_id: str) -> dict | None:
         return next((r for r in self.items if r["id"] == item_id), None)
 
-    def add(self, item: dict, tvdb_id: int | None = None) -> dict:
+    def add(self, item: dict, tvdb_id: int | None = None, seasons: list[int] | None = None) -> dict:
         existing = self.get(item["id"])
         if existing:
+            # Nuove stagioni richieste per una serie gia' in elenco
+            if item["type"] == "tv":
+                old = existing.get("stagioni")
+                existing["stagioni"] = None if seasons is None or old is None else sorted(set(old) | set(seasons))
+                self._save()
             return existing
         req = {
             "id": item["id"],
@@ -184,6 +282,7 @@ class Requests:
             "poster": item.get("poster"),
             "backdrop": item.get("backdrop"),
             "platforms": item.get("platforms", []),
+            "stagioni": seasons if item["type"] == "tv" else None,
             "richiesto_il": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         self.items.insert(0, req)
