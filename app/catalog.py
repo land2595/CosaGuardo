@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 
 from .config import PLATFORMS, Settings
+from .imdb import ImdbRatings
 
 log = logging.getLogger("catalog")
 
@@ -23,6 +24,17 @@ COMPANY_HINTS = {"netflix": "netflix", "amazon": "prime", "apple original": "app
                  "disney+": "disney", "paramount+": "paramount", "sky original": "sky", "sky studios": "sky"}
 IMG = os.getenv("TMDB_IMAGE_URL", "https://image.tmdb.org/t/p")
 MONETIZATION = "flatrate|free|ads"
+
+# "Da non perdere"
+MUST_SEE_DAYS = 183           # usciti negli ultimi 6 mesi
+MUST_SEE_MIN_RATING = 7.0
+MUST_SEE_PRIOR = 6.8          # voto medio di partenza per la media pesata
+MUST_SEE_VOTES = {            # voti minimi per fidarsi del punteggio
+    "movie": {"imdb": 3000, "tmdb": 150},
+    "tv": {"imdb": 1000, "tmdb": 60},
+}
+# Generi TV esclusi: bambini, notiziari, reality, soap, talk show
+TV_EXCLUDED_GENRES = {10762, 10763, 10764, 10766, 10767}
 
 
 class TMDBError(RuntimeError):
@@ -39,6 +51,7 @@ class Catalog:
         self._details: dict[str, dict] = {}
         self._trailers: dict[str, dict | None] = {}
         self._sem = asyncio.Semaphore(8)
+        self.imdb = ImdbRatings(self.s.data_dir, self.s.imdb_ratings_url, self.s.imdb_ratings)
         self._cache_file = os.path.join(self.s.data_dir, "catalogo.json")
         self._key_file = os.path.join(self.s.data_dir, "chiave_tmdb")
         self.key_from_env = bool(self.s.tmdb_api_key)
@@ -176,8 +189,10 @@ class Catalog:
     async def _details_for(self, client, kind: str, tmdb_id: int) -> dict:
         key = f"{kind}-{tmdb_id}"
         if key not in self._details:
-            extra = "watch/providers,release_dates" if kind == "movie" else "watch/providers"
+            extra = "watch/providers,release_dates" if kind == "movie" else "watch/providers,external_ids"
             d = await self._get(client, f"/{kind}/{tmdb_id}", append_to_response=extra)
+            if d:
+                d["_tradotto"] = bool(d.get("overview"))
             if d and not d.get("overview"):
                 # Trama non tradotta: ripiego sull'inglese
                 en = await self._get(client, f"/{kind}/{tmdb_id}", language="en-US")
@@ -467,21 +482,72 @@ class Catalog:
         return items
 
     async def _must_see(self, client, today: date) -> list[dict]:
-        """I titoli recenti con i voti piu' alti, disponibili sulle piattaforme italiane."""
-        movie_ids, tv_ids = await asyncio.gather(
-            self._discover(client, "movie", 2, sort_by="vote_average.desc",
-                           **{"vote_count.gte": 200, "primary_release_date.gte": (today - timedelta(days=365)).isoformat(),
-                              "primary_release_date.lte": today.isoformat()}),
-            self._discover(client, "tv", 3, sort_by="vote_average.desc",
-                           **{"vote_count.gte": 80, "air_date.gte": (today - timedelta(days=180)).isoformat(),
-                              "air_date.lte": today.isoformat()}),
+        """I titoli piu' votati usciti negli ultimi 6 mesi, gia' disponibili in Italia e tradotti in italiano.
+
+        Il voto e' quello di IMDb (molti piu' votanti di TMDB); se non c'e', quello di TMDB.
+        La classifica usa la media pesata di IMDb, cosi' un titolo con pochi voti non scavalca
+        un titolo con un voto appena piu' basso ma dato da decine di migliaia di persone.
+        """
+        since = today - timedelta(days=MUST_SEE_DAYS)
+        movie_q = {"primary_release_date.gte": (since - timedelta(days=120)).isoformat(),
+                   "primary_release_date.lte": today.isoformat(), "without_genres": "10770"}
+        tv_q = {"air_date.gte": since.isoformat(), "air_date.lte": today.isoformat(),
+                "without_genres": ",".join(map(str, sorted(TV_EXCLUDED_GENRES)))}
+        found = await asyncio.gather(
+            self._discover(client, "movie", 3, sort_by="vote_average.desc", **{"vote_count.gte": 50}, **movie_q),
+            self._discover(client, "movie", 2, sort_by="popularity.desc", **movie_q),
+            self._discover(client, "tv", 3, sort_by="vote_average.desc", **{"vote_count.gte": 30}, **tv_q),
+            self._discover(client, "tv", 2, sort_by="popularity.desc", **tv_q),
         )
+        movie_ids = list(dict.fromkeys(found[0] + found[1]))
+        tv_ids = list(dict.fromkeys(found[2] + found[3]))
         movies, shows = await asyncio.gather(
             self._build(client, "movie", movie_ids, today), self._build(client, "tv", tv_ids, today),
         )
-        items = [x for x in unique_items(movies + shows) if x["rating"] >= 7]
-        items.sort(key=lambda x: (x["rating"], x["votes"]), reverse=True)
+        cutoff = since.isoformat()
+        candidates = []
+        for it in unique_items(movies + shows):
+            d = self._details.get(it["id"]) or {}
+            if not d.get("_tradotto"):
+                continue  # niente scheda in italiano
+            if it["type"] == "tv" and any(g.get("id") in TV_EXCLUDED_GENRES for g in d.get("genres", [])):
+                continue
+            started = it["date"] if it["type"] == "movie" else self._season_start(d)
+            if not started or not cutoff <= started <= today.isoformat():
+                continue  # uscito (o con la stagione partita) piu' di 6 mesi fa
+            imdb_id = d.get("imdb_id") or (d.get("external_ids") or {}).get("imdb_id")
+            candidates.append((it, imdb_id))
+
+        ratings = await self.imdb.lookup({i for _, i in candidates if i})
+        items = []
+        for it, imdb_id in candidates:
+            mins = MUST_SEE_VOTES[it["type"]]
+            if imdb_id in ratings and ratings[imdb_id][1] >= mins["imdb"]:
+                voto, voti = ratings[imdb_id]
+                it["score"] = {"fonte": "IMDb", "voto": voto, "voti": voti,
+                               "url": f"https://www.imdb.com/title/{imdb_id}/"}
+                m = mins["imdb"]
+            elif it["votes"] >= mins["tmdb"] and not (imdb_id in ratings):
+                # Titolo non ancora su IMDb (o IMDb non raggiungibile): voto TMDB
+                voto, voti = it["rating"], it["votes"]
+                it["score"] = {"fonte": "TMDB", "voto": voto, "voti": voti, "url": it["tmdb_url"]}
+                m = mins["tmdb"]
+            else:
+                continue  # troppo pochi voti per fidarsi
+            if voto < MUST_SEE_MIN_RATING:
+                continue
+            it["rating"], it["votes"] = voto, voti
+            it["_peso"] = (voti * voto + m * MUST_SEE_PRIOR) / (voti + m)
+            items.append(it)
+        items.sort(key=lambda x: x.pop("_peso"), reverse=True)
         return items[:48]
+
+    @staticmethod
+    def _season_start(d: dict) -> str | None:
+        """Data di inizio della stagione andata in onda per ultima (o della serie)."""
+        season = (d.get("last_episode_to_air") or {}).get("season_number")
+        start = next((s.get("air_date") for s in d.get("seasons", []) if s.get("season_number") == season), None)
+        return start or d.get("first_air_date")
 
     async def tv_seasons(self, tmdb_id: int) -> list[dict]:
         async with self._client() as client:

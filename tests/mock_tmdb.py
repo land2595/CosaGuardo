@@ -5,6 +5,7 @@ Poi:    TMDB_API_KEY=test TMDB_BASE_URL=http://127.0.0.1:9000 \
         TMDB_IMAGE_URL=http://127.0.0.1:9000/img DATA_DIR=./data uvicorn app.main:app --port 8080
 """
 
+import gzip
 import hashlib
 import random
 from datetime import date, timedelta
@@ -22,6 +23,8 @@ PROVIDERS = [
     (222, "Rai Play"), (359, "Mediaset Infinity"),
 ]
 
+GENRE_IDS = {"Dramma": 18, "Commedia": 35, "Thriller": 53, "Azione": 28, "Fantascienza": 878, "Crime": 80,
+             "Animazione": 16, "Documentario": 99, "Fantasy": 14, "Reality": 10764}
 GENRES = ["Dramma", "Commedia", "Thriller", "Azione", "Fantascienza", "Crime", "Animazione", "Documentario", "Fantasy"]
 WORDS = ["Notte", "Ombra", "Mare", "Città", "Fuoco", "Silenzio", "Vento", "Stelle", "Confine", "Segreto",
          "Ritorno", "Inverno", "Cuore", "Luce", "Destino", "Labirinto"]
@@ -77,6 +80,13 @@ SHOWS[2102] = {"title": "La casa sul lago", "first": "2023-03-01", "last": "2025
 SHOWS[2103] = {"title": "Episodi settimanali", "first": "2024-01-01", "last": (TODAY - timedelta(days=3)).isoformat(),
                "season": 2, "providers": [8], "next": {"air_date": (TODAY + timedelta(days=4)).isoformat(),
                                                         "season_number": 2, "episode_number": 5}}
+# Per "Da non perdere": stagione partita piu' di 6 mesi fa, reality show, film senza scheda italiana
+SHOWS[2105] = {"title": "Saga infinita", "first": "2022-01-01", "last": (TODAY - timedelta(days=6)).isoformat(),
+               "season": 3, "season_start": (TODAY - timedelta(days=300)).isoformat(), "providers": [8]}
+SHOWS[2106] = {"title": "L'isola dei vip", "first": (TODAY - timedelta(days=40)).isoformat(),
+               "last": (TODAY - timedelta(days=2)).isoformat(), "season": 1, "providers": [359], "genres": [10764]}
+UNTRANSLATED = {1007}
+FEW_IMDB_VOTES = {1003}
 SHOWS[2104] = {"title": "Orbita", "first": (TODAY + timedelta(days=20)).isoformat(), "last": "",
                "season": 1, "providers": [], "networks": [2552]}
 
@@ -157,16 +167,19 @@ def trending(page: int = 1):
 
 
 @app.get("/movie/{mid}")
-def movie(mid: int):
+def movie(mid: int, language: str = "it-IT"):
     m = MOVIES[mid]
     r = random.Random(mid)
+    overview = ("Un racconto intenso tra segreti di famiglia e scelte impossibili, ambientato in una città che non dorme mai. "
+                "Quando il passato torna a bussare, nessuno potrà più nascondersi.")
+    if mid in UNTRANSLATED:
+        overview = "An intense story of family secrets." if language == "en-US" else ""
     return {
-        "id": mid, "title": m["title"], "original_title": m["title"].upper(),
-        "overview": "Un racconto intenso tra segreti di famiglia e scelte impossibili, ambientato in una città che non dorme mai. "
-                    "Quando il passato torna a bussare, nessuno potrà più nascondersi.",
+        "id": mid, "title": m["title"], "original_title": m["title"].upper(), "imdb_id": f"tt{mid:07d}",
+        "overview": overview,
         "poster_path": f"/p{mid}.svg", "backdrop_path": f"/b{mid}.svg",
         "release_date": m["date"], "runtime": r.randint(88, 150),
-        "genres": [{"name": g} for g in r.sample(GENRES, 2)],
+        "genres": [{"id": GENRE_IDS[g], "name": g} for g in r.sample(GENRES, 2)],
         "vote_average": round(r.uniform(5.8, 8.6), 1), "vote_count": r.randint(40, 4000),
         "popularity": r.uniform(10, 400),
         "watch/providers": _wp(m["providers"]),
@@ -190,9 +203,11 @@ def tv(sid: int):
         "networks": [{"id": n} for n in s.get("networks", [])],
         "seasons": [{"season_number": 0, "name": "Speciali", "episode_count": 2}] + [
             {"season_number": n, "name": f"Stagione {n}", "episode_count": 8,
-             "air_date": s["first"] if n == 1 else (TODAY - timedelta(days=r.choice([5, 60]))).isoformat()}
+             "air_date": s["first"] if n == 1 else s.get("season_start") or (TODAY - timedelta(days=r.choice([5, 60]))).isoformat()}
             for n in range(1, s["season"] + 1)],
-        "genres": [{"name": g} for g in r.sample(GENRES, 2)],
+        "genres": [{"id": g, "name": "Reality"} for g in s["genres"]] if s.get("genres")
+        else [{"id": GENRE_IDS[g], "name": g} for g in r.sample(GENRES, 2)],
+        "external_ids": external_ids(sid),
         "vote_average": round(r.uniform(6, 9), 1), "vote_count": r.randint(40, 4000),
         "popularity": r.uniform(10, 400),
         "watch/providers": _wp(s["providers"]),
@@ -221,4 +236,16 @@ def videos(kind: str, tid: int):
 
 @app.get("/tv/{sid}/external_ids")
 def external_ids(sid: int):
-    return {"tvdb_id": 900000 + sid}
+    return {"tvdb_id": 900000 + sid, "imdb_id": f"tt{sid:07d}"}
+
+
+@app.get("/imdb/title.ratings.tsv.gz")
+def imdb_ratings():
+    """Come il dataset ufficiale di IMDb: tconst, averageRating, numVotes."""
+    rows = ["tconst\taverageRating\tnumVotes", "tt9999999\t5.0\t10"]
+    for tid in sorted(MOVIES) + sorted(SHOWS):
+        r = random.Random(tid * 31)
+        rating = 9.1 if tid in (1003, 1007, 2105, 2106) else round(r.uniform(6.0, 8.8), 1)
+        votes = 120 if tid in FEW_IMDB_VOTES else r.randint(1500, 90000)
+        rows.append(f"tt{tid:07d}\t{rating}\t{votes}")
+    return Response(gzip.compress(("\n".join(rows) + "\n").encode()), media_type="application/gzip")

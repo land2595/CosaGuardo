@@ -159,5 +159,32 @@ def test_prossimamente_and_da_non_perdere(services):
     assert upcoming["tv-2102"]["badge"] == "Stagione 3"
     dates = [i["date"] for i in d["prossimamente"]]
     assert dates == sorted(dates)
-    ratings = [i["rating"] for i in d["da_non_perdere"]]
-    assert ratings == sorted(ratings, reverse=True) and min(ratings) >= 7
+
+
+def test_da_non_perdere_reliable(services, tmp_path):
+    must = {i["id"]: i for i in services.get("/api/catalogo").json()["da_non_perdere"]}
+    assert must
+    for it in must.values():
+        assert it["score"]["fonte"] == "IMDb" and it["rating"] == it["score"]["voto"] >= 7
+        assert it["votes"] >= (3000 if it["type"] == "movie" else 1000)
+        assert it["score"]["url"].startswith("https://www.imdb.com/title/tt")
+        assert it["platforms"]
+    assert "movie-1003" not in must  # voto alto ma pochi voti su IMDb
+    assert "movie-1007" not in must  # senza scheda in italiano
+    assert "tv-2105" not in must     # stagione iniziata piu' di 6 mesi fa
+    assert "tv-2106" not in must     # reality
+    assert (tmp_path / "imdb-ratings.tsv.gz").exists()
+
+
+def test_da_non_perdere_without_imdb(tmp_path):
+    from app.imdb import ImdbRatings
+    s = Settings()
+    s.tmdb_api_key = "test"
+    s.data_dir = str(tmp_path)
+    s.imdb_ratings = False
+    cat = Catalog(s)
+    cat._client = _mock_client(mock_tmdb.app)
+    asyncio.run(cat.refresh())
+    must = cat.data["da_non_perdere"]
+    assert must and all(i["score"]["fonte"] == "TMDB" and i["rating"] >= 7 for i in must)
+    assert isinstance(cat.imdb, ImdbRatings) and not (tmp_path / "imdb-ratings.tsv.gz").exists()

@@ -9,7 +9,7 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 - **Sempre aggiornato**: il catalogo si aggiorna da solo ogni ora (configurabile), e la pagina si ricarica quando ci sono novità.
 - **Di tendenza in Italia**: la classifica dei titoli più visti della settimana disponibili sulle piattaforme italiane.
 - **Prossimamente**: i film e le serie in arrivo sulle piattaforme italiane nei prossimi 60 giorni, con la data di uscita e un calendario per settimana e per mese.
-- **Da non perdere**: i film e le serie con i voti più alti usciti di recente.
+- **Da non perdere**: i film e le serie più votati usciti negli ultimi 6 mesi, già disponibili in Italia e con la scheda in italiano. Il voto è quello di **IMDb**, più affidabile perché dato da molte più persone.
 - Filtri per film o serie e per piattaforma, ricerca per titolo, schede con trama, voto e link "dove guardarlo".
 - Le serie hanno un'etichetta che dice cosa c'è di nuovo: *Nuova serie*, *Nuova stagione* o *Nuovi episodi*.
 - **Trailer** nella scheda di ogni titolo, in italiano quando c'è.
@@ -131,6 +131,7 @@ Tutte le opzioni sono variabili d'ambiente (`-e NOME=valore` con `docker run`, o
 | `SONARR_QUALITY_PROFILE` / `SONARR_ROOT_FOLDER` | il primo | Profilo di qualità e cartella delle serie (nome o id). |
 | `SONARR_LANGUAGE_PROFILE` | il primo | Solo Sonarr v3: profilo lingua (nome o id). |
 | `PLEX_URL` / `PLEX_TOKEN` | | Indirizzo del server Plex e token, per vedere cosa hai già. |
+| `IMDB_RATINGS` | `1` | Usa i voti IMDb in *Da non perdere*. Con `0` usa solo quelli di TMDB e non scarica niente. |
 | `UPCOMING_DAYS` | `60` | Quanti giorni avanti guarda la sezione *Prossimamente*. |
 | `PUID` / `PGID` | `1000` / `1000` | Utente e gruppo con cui gira l'app e a cui appartengono i file in `/data`. Utile se monti una cartella del NAS (es. `-v /percorso/cosaguardo:/data`). |
 
@@ -146,7 +147,7 @@ Ad ogni aggiornamento, CosaGuardo:
 4. per ogni titolo legge la scheda in italiano e le piattaforme italiane su cui è disponibile, poi unisce i doppioni;
 5. ordina tutto dalla data di uscita più recente e salva il risultato in `/data/catalogo.json`, così al riavvio la pagina è subito pronta.
 
-Per **Prossimamente** cerca i film con uscita digitale o TV in Italia nelle prossime settimane e le serie (nuove o con una nuova stagione) che debuttano sulle reti delle piattaforme. **Da non perdere** prende i film dell'ultimo anno e le serie degli ultimi sei mesi con voto almeno 7 e un numero minimo di voti, così non compaiono titoli votati da poche persone.
+Per **Prossimamente** cerca i film con uscita digitale o TV in Italia nelle prossime settimane e le serie (nuove o con una nuova stagione) che debuttano sulle reti delle piattaforme. **Da non perdere** prende i film e le serie (nuove o con una stagione nuova) usciti negli ultimi 6 mesi, disponibili in abbonamento o gratis su una piattaforma italiana e con la trama tradotta in italiano. Esclude reality, talk show, notiziari, soap e programmi per bambini. Il voto viene dal [dataset ufficiale di IMDb](https://developer.imdb.com/non-commercial-datasets/), scaricato una volta al giorno in `/data` (circa 8 MB): servono almeno 3.000 voti per un film e 1.000 per una serie, e il voto minimo è 7. La classifica usa la media pesata di IMDb, così un titolo con pochi voti non scavalca uno votato da decine di migliaia di persone. Se IMDb non è raggiungibile, o un titolo non c'è ancora, si usa il voto di TMDB.
 
 I dati di disponibilità arrivano da [JustWatch](https://www.justwatch.com/it) tramite le API di [TMDB](https://www.themoviedb.org).
 

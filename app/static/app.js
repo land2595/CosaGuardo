@@ -110,7 +110,7 @@ function cardHtml(i, n = 0) {
     : `${esc(i.year)}${genre}`;
   const corner = [
     upcoming && i.date ? calHtml(i.date) : "",
-    state.view === "da_non_perdere" && i.rating ? `<span class="medal">★<b>${i.rating}</b></span>` : "",
+    state.view === "da_non_perdere" && i.rating ? `<span class="medal" title="Voto ${esc(i.score?.fonte || "TMDB")} su ${(i.votes || 0).toLocaleString("it-IT")} voti"><i>${esc(i.score?.fonte || "★")}</i><b>${i.rating.toFixed(1)}</b></span>` : "",
     onPlex(i) ? `<span class="on-plex">Su Plex</span>` : "",
   ].join("");
   let posterBox = `
@@ -269,7 +269,7 @@ function showHero(n, instant = false) {
     $("#hero-eyebrow").textContent = {
       tendenze: `N° ${i.rank} di tendenza in Italia`,
       prossimamente: `${i.type === "movie" ? "Film" : i.badge} · dal ${fmtLong.format(toDate(i.date))}${where ? ` su ${where}` : ""}`,
-      da_non_perdere: `★ ${i.rating} · Da non perdere`,
+      da_non_perdere: `${i.score?.fonte || "★"} ${i.rating?.toFixed(1)} · Da non perdere`,
     }[state.view] || `${i.type === "movie" ? "Film" : i.badge} · ${relDate(i.date)}`;
     $("#hero-title").textContent = i.title;
     $("#hero-meta").textContent = [i.year, i.genres.slice(0, 3).join(", "), i.rating ? `★ ${i.rating}` : ""].filter(Boolean).join("  ·  ");
@@ -315,7 +315,14 @@ async function poll() {
 }
 
 function findItem(id) {
-  return [...(state.data?.novita || []), ...(state.data?.tendenze || []), ...state.requests].find((x) => x.id === id);
+  // Prima la sezione aperta (es. in "Da non perdere" l'elemento ha il voto IMDb), poi le altre
+  const d = state.data || {};
+  const lists = [d[state.view], d.novita, d.tendenze, d.prossimamente, d.da_non_perdere, state.requests];
+  for (const list of lists) {
+    const found = (list || []).find((x) => x.id === id);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 // -------------------------------------------------------------- trailer
@@ -664,12 +671,13 @@ function openDetail(id) {
     (i.genres || []).join(", ") || null,
     i.runtime ? `${i.runtime} min` : null,
     i.seasons ? `${i.seasons} stagion${i.seasons === 1 ? "e" : "i"}` : null,
-    i.rating ? `★ ${i.rating} (${(i.votes || 0).toLocaleString("it-IT")} voti)` : null,
+    i.rating ? `${i.score ? `${i.score.fonte} ` : ""}★ ${i.rating} (${(i.votes || 0).toLocaleString("it-IT")} voti)` : null,
   ].filter(Boolean).join("  ·  ");
   $("#d-overview").textContent = i.overview || "Trama non ancora disponibile.";
   $("#d-platforms").innerHTML = (i.platforms || []).map(badgeHtml).join("");
   $("#d-links").innerHTML =
     (i.watch_link ? `<a href="${esc(i.watch_link)}" target="_blank" rel="noopener">▶ Dove guardarlo</a>` : "") +
+    (i.score?.fonte === "IMDb" ? `<a href="${esc(i.score.url)}" target="_blank" rel="noopener">Scheda su IMDb</a>` : "") +
     `<a href="${esc(i.tmdb_url || `https://www.themoviedb.org/${i.type}/${i.tmdb_id}`)}" target="_blank" rel="noopener">Scheda completa su TMDB</a>`;
   $("#detail").showModal();
 }
