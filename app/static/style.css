@@ -430,6 +430,63 @@ dialog::backdrop { background: #000c; backdrop-filter: blur(6px); }
   border-radius: 9px; padding: 4px 10px 4px 4px;
 }
 .badge img { width: 26px; height: 26px; border-radius: 6px; }
+/* Trailer */
+.d-hero { overflow: hidden; }
+.d-hero.playing { aspect-ratio: 16/9; background: #000 !important; }
+.d-hero.playing::after { display: none; }
+.d-hero iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; z-index: 2; }
+.d-play {
+  position: absolute; z-index: 2; left: 50%; top: 42%; width: 84px; height: 84px; margin: -42px 0 0 -42px;
+  border-radius: 50%; border: 2px solid #ffffffcc; cursor: pointer; display: grid; place-items: center;
+  background: #000a; backdrop-filter: blur(6px); box-shadow: 0 10px 40px #000c;
+  transition: transform .3s cubic-bezier(.3, 1.5, .5, 1), background .3s, border-color .3s;
+  animation: playPulse 2.4s ease-in-out infinite;
+}
+.d-play svg { width: 38px; height: 38px; fill: #fff; margin-left: 5px; }
+.d-play:hover { transform: scale(1.12); background: var(--red); border-color: var(--gold); }
+@keyframes playPulse { 50% { box-shadow: 0 0 0 14px #ffffff12, 0 10px 40px #000c; } }
+
+/* Richieste */
+.d-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+.d-actions:not(:has(button:not([hidden]))) { display: none; }
+.btn-request {
+  --c: #f4efe6;
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 11px 20px; border-radius: 999px; font-weight: 700;
+  color: var(--text); background: #ffffff10; border: 1px solid #ffffff33;
+  transition: background .25s, border-color .25s, transform .2s;
+}
+.btn-request:hover:not(:disabled) { background: #ffffff1c; border-color: var(--gold); transform: translateY(-1px); }
+.btn-request:disabled { cursor: default; }
+.btn-request.richiesto { --c: var(--gold); color: var(--gold); border-color: #f3c46377; background: #f3c4631a; }
+.btn-request.parziale { --c: #5ab0ff; color: #9fd0ff; border-color: #5ab0ff77; background: #5ab0ff1a; }
+.btn-request.disponibile { --c: #3ecf8e; color: #7ee2b0; border-color: #3ecf8e77; background: #3ecf8e1a; }
+.btn-request.sconosciuto { opacity: .7; }
+.btn-request.loading::before {
+  content: ""; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.d-request-msg { margin: 10px 0 0; font-size: 13.5px; min-height: 0; }
+.d-request-msg:empty { display: none; }
+.d-request-msg.err { color: #ff9b9b; }
+.d-request-msg.ok { color: #7ee2b0; }
+
+.req-status {
+  position: absolute; z-index: 2; top: 10px; right: 10px;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+  padding: 4px 9px; border-radius: 999px; background: #000c; backdrop-filter: blur(6px); border: 1px solid #ffffff2a;
+}
+.req-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
+.req-status.richiesto { color: var(--gold); }
+.req-status.parziale { color: #5ab0ff; }
+.req-status.disponibile { color: #3ecf8e; }
+.req-status.assente, .req-status.sconosciuto { color: var(--muted); }
+.req-empty { text-align: center; padding: 70px 20px; color: var(--muted); }
+.req-empty h3 { font-family: var(--display); font-weight: 400; font-size: 34px; letter-spacing: .04em; color: var(--text); margin: 0 0 8px; }
+body.view-richieste .hero, body.view-richieste .filters { display: none !important; }
+
 .d-links { margin: 18px 0 0; display: flex; gap: 18px; flex-wrap: wrap; font-weight: 600; font-size: 14px; }
 
 footer { color: var(--muted); font-size: 12px; text-align: center; padding: 30px 16px 40px; border-top: 1px solid var(--line); margin-top: 20px; }

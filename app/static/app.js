@@ -5,6 +5,9 @@ const state = {
   platforms: new Set(JSON.parse(localGet("platforms") || "[]")),
   data: null,
   hero: { items: [], index: 0, timer: null },
+  servizi: { radarr: false, sonarr: false },
+  requests: [],
+  requestsLoaded: false,
 };
 
 const $ = (s) => document.querySelector(s);
@@ -117,6 +120,10 @@ function render() {
   content.setAttribute("aria-busy", "false");
   $("#empty").hidden = items.length > 0 || !state.data;
 
+  if (state.view === "richieste") {
+    renderRequests();
+    return;
+  }
   if (state.view === "tendenze") {
     content.innerHTML = items.length ? blockHtml("I più visti questa settimana", items, true) : "";
     return;
@@ -258,32 +265,189 @@ async function poll() {
 }
 
 function findItem(id) {
-  return [...(state.data?.novita || []), ...(state.data?.tendenze || [])].find((x) => x.id === id);
+  return [...(state.data?.novita || []), ...(state.data?.tendenze || []), ...state.requests].find((x) => x.id === id);
+}
+
+// -------------------------------------------------------------- trailer
+
+const trailerCache = new Map();
+
+async function loadTrailer(i) {
+  const key = `${i.type}/${i.tmdb_id}`;
+  if (!trailerCache.has(key)) {
+    trailerCache.set(key, fetch(`/api/trailer/${key}`).then((r) => r.ok ? r.json() : {}).then((d) => d.trailer || null).catch(() => null));
+  }
+  return trailerCache.get(key);
+}
+
+function playTrailer(t) {
+  const hero = $("#d-hero");
+  hero.classList.add("playing");
+  $("#d-play").hidden = true;
+  const f = document.createElement("iframe");
+  f.src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(t.key)}?autoplay=1&rel=0&modestbranding=1&hl=it&cc_lang_pref=it`;
+  f.title = t.name || "Trailer";
+  f.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+  f.allowFullscreen = true;
+  hero.appendChild(f);
+  hero.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function stopTrailer() {
+  $("#d-hero").classList.remove("playing");
+  $("#d-hero iframe")?.remove();
+}
+
+// ------------------------------------------------------------ richieste
+
+const REQ_LABELS = {
+  assente: "＋ Richiedi",
+  richiesto: "⏳ Richiesto, in attesa",
+  parziale: "⬇ In arrivo",
+  disponibile: "✓ Già disponibile",
+  sconosciuto: "Servizio non raggiungibile",
+};
+const REQ_BADGES = { assente: "Non richiesto", richiesto: "Richiesto", parziale: "In arrivo", disponibile: "Disponibile", sconosciuto: "Stato sconosciuto" };
+
+function setRequestButton(stato, servizio) {
+  const b = $("#d-request");
+  b.className = `btn-request ${stato || ""}`;
+  b.disabled = stato !== "assente";
+  b.textContent = stato === "assente" ? `${REQ_LABELS.assente} a ${servizio}` : REQ_LABELS[stato] || "";
+  b.title = stato === "assente" ? `Aggiunge il titolo a ${servizio} e avvia la ricerca` : "";
+}
+
+function requestMsg(text, isError) {
+  const m = $("#d-request-msg");
+  m.textContent = text || "";
+  m.className = `d-request-msg ${isError ? "err" : "ok"}`;
+}
+
+async function loadRequestState(i) {
+  const svc = i.type === "movie" ? state.servizi.radarr : state.servizi.sonarr;
+  const b = $("#d-request");
+  b.hidden = !svc;
+  if (!svc) return;
+  b.className = "btn-request loading";
+  b.disabled = true;
+  b.textContent = "Controllo…";
+  try {
+    const r = await (await fetch(`/api/richieste/${encodeURIComponent(i.id)}`)).json();
+    if ($("#detail").dataset.id !== i.id) return;
+    setRequestButton(r.stato, r.servizio);
+    if (r.errore) requestMsg(r.errore, true);
+  } catch {
+    setRequestButton("sconosciuto");
+  }
+}
+
+async function sendRequest() {
+  const id = $("#detail").dataset.id;
+  const b = $("#d-request");
+  b.className = "btn-request loading";
+  b.disabled = true;
+  b.textContent = "Invio richiesta…";
+  requestMsg("");
+  try {
+    const r = await fetch("/api/richieste", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Richiesta non riuscita.");
+    setRequestButton(body.stato, body.servizio);
+    requestMsg(`Fatto! ${body.servizio} sta cercando il titolo.`);
+    state.requestsLoaded = false;
+  } catch (err) {
+    setRequestButton("assente", findItem(id)?.type === "movie" ? "Radarr" : "Sonarr");
+    requestMsg(err.message, true);
+  }
+}
+
+async function loadServizi() {
+  try {
+    state.servizi = await (await fetch("/api/servizi")).json();
+  } catch { /* ignora */ }
+  const any = state.servizi.radarr || state.servizi.sonarr;
+  document.querySelector('.tab[data-view="richieste"]').hidden = !any;
+  if (!any && state.view === "richieste") setView("novita");
+}
+
+function requestCardHtml(r, n) {
+  const poster = r.poster
+    ? `<img class="p" src="${esc(r.poster)}" alt="" loading="lazy" onload="this.classList.add('ok')" onerror="this.classList.add('ok')">`
+    : `<div class="noimg">${esc(r.title)}</div>`;
+  const when = new Date(r.richiesto_il).toLocaleDateString("it-IT", { day: "numeric", month: "short" });
+  return `<button class="card" data-id="${esc(r.id)}" style="--i:${Math.min(n, 18)}">
+    <div class="poster">
+      ${poster}
+      <span class="pill">${r.type === "movie" ? "Film" : "Serie TV"}</span>
+      <span class="req-status ${esc(r.stato)}">${esc(REQ_BADGES[r.stato] || r.stato)}</span>
+      <div class="logos">${(r.platforms || []).map(logoHtml).join("")}</div>
+      <span class="glare"></span>
+    </div>
+    <h3>${esc(r.title)}</h3>
+    <span class="meta"><b>Richiesto ${esc(when)}</b> · ${r.type === "movie" ? "Radarr" : "Sonarr"}</span>
+  </button>`;
+}
+
+async function renderRequests() {
+  if (!state.requestsLoaded) {
+    content.innerHTML = `<section class="block"><div class="grid">${'<div class="card skeleton"><div class="poster"></div><h3></h3><span class="meta"></span></div>'.repeat(6)}</div></section>`;
+    try {
+      const d = await (await fetch("/api/richieste")).json();
+      state.requests = d.richieste || [];
+      state.requestsLoaded = true;
+    } catch {
+      content.innerHTML = `<div class="req-empty"><h3>Richieste non disponibili</h3><p>Impossibile contattare il server.</p></div>`;
+      return;
+    }
+  }
+  if (state.view !== "richieste") return;
+  $("#empty").hidden = true;
+  content.innerHTML = state.requests.length
+    ? `<section class="block">
+        <div class="block-head"><h2>Le mie richieste</h2><span class="count">${state.requests.length} ${state.requests.length === 1 ? "titolo" : "titoli"}</span></div>
+        <div class="grid">${state.requests.map(requestCardHtml).join("")}</div>
+      </section>`
+    : `<div class="req-empty"><h3>Nessuna richiesta, per ora</h3><p>Apri un titolo e premi “Richiedi”: i film vanno a Radarr, le serie a Sonarr.</p></div>`;
 }
 
 function openDetail(id) {
   const i = findItem(id);
   if (!i) return;
+  const dlg = $("#detail");
+  dlg.dataset.id = id;
+  stopTrailer();
+  requestMsg("");
+  $("#d-play").hidden = true;
+  $("#d-trailer").hidden = true;
+  loadTrailer(i).then((t) => {
+    if (!t || dlg.dataset.id !== id) return;
+    $("#d-play").hidden = false;
+    $("#d-trailer").hidden = false;
+    $("#d-play").onclick = $("#d-trailer").onclick = () => playTrailer(t);
+  });
+  loadRequestState(i);
   $("#d-hero").style.backgroundImage = i.backdrop ? `url("${i.backdrop.replace("/w780/", "/w1280/")}")` : "";
   const poster = $("#d-poster");
   poster.hidden = !i.poster;
   if (i.poster) poster.src = i.poster;
-  $("#d-badge").textContent = i.type === "movie" ? "Film" : i.badge;
+  $("#d-badge").textContent = i.type === "movie" ? "Film" : i.badge || "Serie TV";
   $("#d-title").textContent = i.title;
   const orig = i.original_title || "";
   $("#d-orig").textContent = orig.toLowerCase() !== (i.title || "").toLowerCase() ? orig : "";
   $("#d-meta").textContent = [
     i.date ? `Uscita ${fmtLong.format(toDate(i.date))}` : null,
-    i.genres.join(", ") || null,
+    (i.genres || []).join(", ") || null,
     i.runtime ? `${i.runtime} min` : null,
     i.seasons ? `${i.seasons} stagion${i.seasons === 1 ? "e" : "i"}` : null,
-    i.rating ? `★ ${i.rating} (${i.votes.toLocaleString("it-IT")} voti)` : null,
+    i.rating ? `★ ${i.rating} (${(i.votes || 0).toLocaleString("it-IT")} voti)` : null,
   ].filter(Boolean).join("  ·  ");
   $("#d-overview").textContent = i.overview || "Trama non ancora disponibile.";
-  $("#d-platforms").innerHTML = i.platforms.map(badgeHtml).join("");
+  $("#d-platforms").innerHTML = (i.platforms || []).map(badgeHtml).join("");
   $("#d-links").innerHTML =
     (i.watch_link ? `<a href="${esc(i.watch_link)}" target="_blank" rel="noopener">▶ Dove guardarlo</a>` : "") +
-    `<a href="${esc(i.tmdb_url)}" target="_blank" rel="noopener">Scheda completa su TMDB</a>`;
+    `<a href="${esc(i.tmdb_url || `https://www.themoviedb.org/${i.type}/${i.tmdb_id}`)}" target="_blank" rel="noopener">Scheda completa su TMDB</a>`;
   $("#detail").showModal();
 }
 
@@ -321,7 +485,8 @@ $("#setup-form").addEventListener("submit", async (e) => {
 
 function setView(view) {
   state.view = view;
-  localSet("view", view);
+  if (view !== "richieste") localSet("view", view);
+  document.body.classList.toggle("view-richieste", view === "richieste");
   document.querySelectorAll(".tab").forEach((t) => {
     t.classList.toggle("active", t.dataset.view === view);
     t.setAttribute("aria-selected", t.dataset.view === view);
@@ -329,6 +494,7 @@ function setView(view) {
 }
 
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
+  if (t.dataset.view === "richieste") state.requestsLoaded = false;
   setView(t.dataset.view);
   renderChips();
   renderHero();
@@ -406,8 +572,11 @@ $("#status").addEventListener("click", async (e) => {
 $("#detail").addEventListener("click", (e) => {
   if (e.target.matches("[data-close]") || e.target === e.currentTarget) e.currentTarget.close();
 });
+$("#detail").addEventListener("close", stopTrailer);
+$("#d-request").addEventListener("click", sendRequest);
 
 setView(state.view);
+loadServizi();
 skeleton();
 load().catch(() => { $("#error").hidden = false; $("#error").textContent = "Impossibile contattare il server."; });
 setInterval(poll, POLL_MS);

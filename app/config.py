@@ -40,6 +40,16 @@ class Settings:
     pages: int = field(default_factory=lambda: _int("PAGES", 5))
     refresh_minutes: int = field(default_factory=lambda: _int("REFRESH_MINUTES", 60))
     data_dir: str = field(default_factory=lambda: os.getenv("DATA_DIR", "/data"))
+    # Richieste: i film vanno a Radarr, le serie a Sonarr (facoltativi)
+    radarr_url: str = field(default_factory=lambda: os.getenv("RADARR_URL", "").strip().rstrip("/"))
+    radarr_api_key: str = field(default_factory=lambda: os.getenv("RADARR_API_KEY", "").strip())
+    radarr_quality_profile: str = field(default_factory=lambda: os.getenv("RADARR_QUALITY_PROFILE", "").strip())
+    radarr_root_folder: str = field(default_factory=lambda: os.getenv("RADARR_ROOT_FOLDER", "").strip())
+    sonarr_url: str = field(default_factory=lambda: os.getenv("SONARR_URL", "").strip().rstrip("/"))
+    sonarr_api_key: str = field(default_factory=lambda: os.getenv("SONARR_API_KEY", "").strip())
+    sonarr_quality_profile: str = field(default_factory=lambda: os.getenv("SONARR_QUALITY_PROFILE", "").strip())
+    sonarr_root_folder: str = field(default_factory=lambda: os.getenv("SONARR_ROOT_FOLDER", "").strip())
+    sonarr_language_profile: str = field(default_factory=lambda: os.getenv("SONARR_LANGUAGE_PROFILE", "").strip())
     enabled_platforms: list[str] = field(
         default_factory=lambda: [
             p.strip()

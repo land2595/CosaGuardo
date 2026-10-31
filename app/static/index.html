@@ -21,6 +21,7 @@
     <nav class="tabs" role="tablist" aria-label="Sezioni">
       <button role="tab" class="tab" data-view="novita">Ultime uscite</button>
       <button role="tab" class="tab" data-view="tendenze">Di tendenza in Italia</button>
+      <button role="tab" class="tab" data-view="richieste" hidden>Le mie richieste</button>
     </nav>
     <div class="status" id="status" aria-live="polite"></div>
   </header>
@@ -77,7 +78,11 @@
 
   <dialog id="detail" aria-labelledby="d-title">
     <button class="close" aria-label="Chiudi" data-close>&times;</button>
-    <div class="d-hero" id="d-hero"></div>
+    <div class="d-hero" id="d-hero">
+      <button class="d-play" id="d-play" hidden aria-label="Guarda il trailer">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+    </div>
     <div class="d-body">
       <img class="d-poster" id="d-poster" alt="">
       <div class="d-text">
@@ -90,6 +95,11 @@
           <span class="ticket-label">Lo trovi su</span>
           <div class="badges" id="d-platforms"></div>
         </div>
+        <div class="d-actions" id="d-actions">
+          <button class="btn-gold" id="d-trailer" hidden>▶ Guarda il trailer</button>
+          <button class="btn-request" id="d-request" hidden></button>
+        </div>
+        <p class="d-request-msg" id="d-request-msg" role="status"></p>
         <p class="d-links" id="d-links"></p>
       </div>
     </div>

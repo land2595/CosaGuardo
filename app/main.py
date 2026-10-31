@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from pydantic import BaseModel
 
+from .arr import ASSENTE, SCONOSCIUTO, ArrError, Radarr, Requests, Sonarr
 from .catalog import Catalog, TMDBError
 from .config import settings
 
@@ -17,6 +18,12 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("cosaguardo")
 
 catalog = Catalog(settings)
+radarr = Radarr(settings.radarr_url, settings.radarr_api_key,
+                settings.radarr_quality_profile, settings.radarr_root_folder)
+sonarr = Sonarr(settings.sonarr_url, settings.sonarr_api_key,
+                settings.sonarr_quality_profile, settings.sonarr_root_folder,
+                language_profile=settings.sonarr_language_profile)
+requests = Requests(settings.data_dir)
 STATIC = Path(__file__).parent / "static"
 
 
@@ -110,6 +117,96 @@ async def post_chiave(body: Chiave):
         raise HTTPException(400, str(e)) from e
     asyncio.create_task(catalog.refresh())
     return {"ok": True}
+
+
+# ------------------------------------------------------------------ trailer
+
+@app.get("/api/trailer/{kind}/{tmdb_id}")
+async def get_trailer(kind: str, tmdb_id: int):
+    if kind not in ("movie", "tv"):
+        raise HTTPException(404)
+    try:
+        return {"trailer": await catalog.trailer(kind, tmdb_id)}
+    except TMDBError as e:
+        raise HTTPException(502, str(e)) from e
+
+
+# ---------------------------------------------------------------- richieste
+
+def _service(kind: str):
+    return radarr if kind == "movie" else sonarr
+
+
+async def _arr_id(req_or_item: dict) -> int | None:
+    """Radarr usa l'id TMDB, Sonarr l'id TVDB."""
+    if req_or_item["type"] == "movie":
+        return req_or_item["tmdb_id"]
+    return req_or_item.get("tvdb_id") or await catalog.tvdb_id(req_or_item["tmdb_id"])
+
+
+@app.get("/api/servizi")
+def get_servizi():
+    return {"radarr": radarr.configured, "sonarr": sonarr.configured}
+
+
+@app.get("/api/richieste")
+async def get_richieste():
+    """Le richieste fatte, con lo stato aggiornato da Radarr e Sonarr."""
+    async def lib(svc):
+        if not svc.configured:
+            return None
+        try:
+            return await svc.library()
+        except ArrError as e:
+            log.warning("%s", e)
+            return None
+
+    movies, shows = await asyncio.gather(lib(radarr), lib(sonarr))
+    out = []
+    for r in requests.items:
+        library, key = (movies, r["tmdb_id"]) if r["type"] == "movie" else (shows, r.get("tvdb_id"))
+        stato = SCONOSCIUTO if library is None else library.get(key, ASSENTE)
+        out.append(r | {"stato": stato})
+    return {"richieste": out, "servizi": get_servizi()}
+
+
+@app.get("/api/richieste/{item_id}")
+async def get_richiesta(item_id: str):
+    item = requests.get(item_id) or catalog.find_item(item_id)
+    if not item:
+        raise HTTPException(404, "Titolo non trovato.")
+    svc = _service(item["type"])
+    if not svc.configured:
+        return {"stato": None, "configurato": False, "servizio": svc.name}
+    try:
+        arr_id = await _arr_id(item)
+        stato = await svc.status(arr_id) if arr_id else ASSENTE
+    except (ArrError, TMDBError) as e:
+        return {"stato": SCONOSCIUTO, "configurato": True, "servizio": svc.name, "errore": str(e)}
+    return {"stato": stato, "configurato": True, "servizio": svc.name}
+
+
+class NuovaRichiesta(BaseModel):
+    id: str
+
+
+@app.post("/api/richieste")
+async def post_richiesta(body: NuovaRichiesta):
+    item = catalog.find_item(body.id)
+    if not item:
+        raise HTTPException(404, "Titolo non trovato.")
+    svc = _service(item["type"])
+    if not svc.configured:
+        raise HTTPException(400, f"{svc.name} non e' configurato.")
+    try:
+        arr_id = await _arr_id(item)
+        if not arr_id:
+            raise HTTPException(400, "Questa serie non ha un id TVDB, Sonarr non puo' aggiungerla.")
+        stato = await svc.add(arr_id)
+    except (ArrError, TMDBError) as e:
+        raise HTTPException(502, str(e)) from e
+    requests.add(item, tvdb_id=arr_id if item["type"] == "tv" else None)
+    return {"stato": stato, "servizio": svc.name}
 
 
 @app.get("/health")

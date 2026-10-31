@@ -176,3 +176,21 @@ def configuration(api_key: str = ""):
     if api_key.startswith("sbagliata"):
         return Response('{"status_code":7}', status_code=401, media_type="application/json")
     return {"images": {"base_url": "/img/"}}
+
+
+@app.get("/{kind}/{tid}/videos")
+def videos(kind: str, tid: int):
+    return {"results": [
+        {"site": "YouTube", "key": "teaser-en", "type": "Teaser", "iso_639_1": "en", "official": True,
+         "published_at": "2026-01-01T00:00:00.000Z", "name": "Teaser"},
+        {"site": "YouTube", "key": "trailer-en", "type": "Trailer", "iso_639_1": "en", "official": True,
+         "published_at": "2026-02-01T00:00:00.000Z", "name": "Official Trailer"},
+        {"site": "YouTube", "key": "aqz-KE-bpKQ", "type": "Trailer", "iso_639_1": "it", "official": True,
+         "published_at": "2026-02-02T00:00:00.000Z", "name": "Trailer ufficiale italiano"},
+        {"site": "Vimeo", "key": "x", "type": "Trailer", "iso_639_1": "it"},
+    ] if tid % 5 else []}
+
+
+@app.get("/tv/{sid}/external_ids")
+def external_ids(sid: int):
+    return {"tvdb_id": 900000 + sid}

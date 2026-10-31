@@ -32,6 +32,7 @@ class Catalog:
         self.refreshing = False
         self._provider_map: dict[int, str] = {}
         self._details: dict[str, dict] = {}
+        self._trailers: dict[str, dict | None] = {}
         self._sem = asyncio.Semaphore(8)
         self._cache_file = os.path.join(self.s.data_dir, "catalogo.json")
         self._key_file = os.path.join(self.s.data_dir, "chiave_tmdb")
@@ -359,6 +360,43 @@ class Catalog:
         for n, it in enumerate(items, 1):
             it["rank"] = n
         return items
+
+    # ------------------------------------------------------- trailer e id
+
+    async def trailer(self, kind: str, tmdb_id: int) -> dict | None:
+        """Il trailer YouTube migliore: in italiano se c'e', altrimenti in inglese."""
+        key = f"{kind}-{tmdb_id}"
+        if key in self._trailers:
+            return self._trailers[key]
+        async with self._client() as client:
+            res = await self._get(client, f"/{kind}/{tmdb_id}/videos", include_video_language="it,en,null")
+        videos = [v for v in res.get("results", []) if v.get("site") == "YouTube" and v.get("key")]
+
+        def score(v: dict) -> tuple:
+            return (
+                v.get("iso_639_1") == "it",
+                v.get("type") == "Trailer",
+                v.get("type") == "Teaser",
+                bool(v.get("official")),
+                v.get("published_at") or "",
+            )
+
+        best = max(videos, key=score, default=None)
+        found = {"key": best["key"], "name": best.get("name"), "lingua": best.get("iso_639_1")} if best else None
+        self._trailers[key] = found
+        return found
+
+    async def tvdb_id(self, tmdb_id: int) -> int | None:
+        async with self._client() as client:
+            res = await self._get(client, f"/tv/{tmdb_id}/external_ids")
+        return res.get("tvdb_id")
+
+    def find_item(self, item_id: str) -> dict | None:
+        for group in ("novita", "tendenze"):
+            for it in self.data.get(group, []):
+                if it["id"] == item_id:
+                    return it
+        return None
 
     # ------------------------------------------------------------ persistenza
 
