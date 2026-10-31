@@ -200,6 +200,7 @@ def tv(sid: int):
         "first_air_date": s["first"], "number_of_seasons": s["season"],
         "last_episode_to_air": {"air_date": s["last"], "season_number": s["season"], "episode_number": 3} if s["last"] else None,
         "next_episode_to_air": s.get("next"),
+        "status": s.get("status") or ("Ended" if sid in (2003, 2008) else "Returning Series"),
         "networks": [{"id": n} for n in s.get("networks", [])],
         "seasons": [{"season_number": 0, "name": "Speciali", "episode_count": 2}] + [
             {"season_number": n, "name": f"Stagione {n}", "episode_count": 8,

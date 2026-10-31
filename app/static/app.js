@@ -398,12 +398,61 @@ function seasonsSummary(det) {
   return `${names} · ${det.episodi_scaricati}/${det.episodi_previsti} episodi`;
 }
 
+function seasonBarsHtml(list, cls = "") {
+  return `<div class="season-bars ${cls}">${list.map((s) => {
+    const pct = s.tot ? Math.min(100, Math.round(s.have / s.tot * 100)) : s.have ? 100 : 0;
+    const full = s.tot && s.have >= s.tot;
+    return `<div class="sb ${s.off ? "off" : ""} ${full ? "full" : ""}" title="Stagione ${s.n}: ${s.have}${s.tot ? `/${s.tot}` : ""} episodi">
+      <span class="sb-n">S${s.n}</span><span class="sb-bar"><i style="width:${pct}%"></i></span><span class="sb-c">${full ? "✓ " : ""}${s.have}${s.tot ? `/${s.tot}` : ""}</span></div>`;
+  }).join("")}</div>`;
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// Stato della serie: prossima stagione o episodio in arrivo, oppure serie terminata
+function seriesRowHtml(serie) {
+  const p = serie.prossimo;
+  const when = (iso) => {
+    const d = -daysAgo(iso);
+    const rel = d <= 0 ? "oggi" : d === 1 ? "domani" : `fra ${d} giorni`;
+    return `${fmtLong.format(toDate(iso))} · ${rel}`;
+  };
+  let icon = "📅", cls = "next", title, text;
+  if (p?.nuova_stagione) {
+    title = p.stagione === 1 ? "La serie debutta" : `Stagione ${p.stagione} in arrivo`;
+    text = p.data ? when(p.data) : "Confermata, data non ancora annunciata";
+  } else if (p) {
+    title = `Stagione ${p.stagione} in corso`;
+    text = `Episodio ${p.episodio}: ${when(p.data)}`;
+  } else if (serie.stato === "terminata" || serie.stato === "cancellata") {
+    icon = "■"; cls = "ended";
+    title = serie.stato === "terminata" ? "Serie terminata" : "Serie cancellata";
+    const n = serie.stagioni?.length || 0;
+    text = [n ? plural(n, "stagione", "stagioni") : "", serie.ultimo?.data ? `ultimo episodio il ${fmtLong.format(toDate(serie.ultimo.data))}` : ""]
+      .filter(Boolean).join(", ") || "Non sono previste nuove stagioni";
+  } else if (serie.stato === "in_produzione") {
+    title = "In produzione";
+    text = "Data di uscita non ancora annunciata";
+  } else {
+    icon = "…"; cls = "wait";
+    title = "Serie in corso";
+    text = "Nessuna nuova stagione annunciata per ora";
+  }
+  return `<div class="st-row serie ${cls}"><span class="st-icon">${icon}</span><div><b>${esc(title)}</b><span>${esc(text)}</span></div></div>`;
+}
+
 function statusPanelHtml(i, r) {
   const rows = [];
+  if (r.serie) rows.push(seriesRowHtml(r.serie));
   if (r.plex) {
-    const what = i.type === "tv" ? `${r.plex.stagioni} stagion${r.plex.stagioni === 1 ? "e" : "i"} · ${r.plex.episodi} episodi` : "Pronto da guardare";
+    const what = i.type === "tv"
+      ? `${plural(r.plex.stagioni, "stagione", "stagioni")} · ${r.plex.episodi} episodi`
+      : "Pronto da guardare";
     rows.push(`<div class="st-row plex"><span class="st-icon">▶</span><div><b>Già su Plex</b><span>${esc(what)}</span></div>
       ${r.plex.url ? `<a class="st-link" href="${esc(r.plex.url)}" target="_blank" rel="noopener">Apri in Plex</a>` : ""}</div>`);
+    if (r.plex.per_stagione?.length) {
+      rows.push(seasonBarsHtml(r.plex.per_stagione.map((s) => ({ n: s.numero, have: s.episodi, tot: s.totali, off: !s.episodi })), "plex"));
+    }
   }
   const det = r.dettagli;
   if (det) {
@@ -416,11 +465,7 @@ function statusPanelHtml(i, r) {
     rows.push(`<div class="st-row arr ${esc(det.stato)}"><span class="st-icon">${det.stato === "disponibile" ? "✓" : "⏳"}</span>
       <div><b>In ${esc(r.servizio)}</b><span>${esc(text)}</span></div></div>`);
     if (i.type === "tv" && det.stagioni?.length) {
-      rows.push(`<div class="season-bars">${det.stagioni.map((s) => {
-        const pct = s.totali ? Math.round(s.scaricati / s.totali * 100) : 0;
-        return `<div class="sb ${s.monitorata ? "" : "off"}" title="Stagione ${s.numero}: ${s.scaricati}/${s.totali} episodi">
-          <span class="sb-n">S${s.numero}</span><span class="sb-bar"><i style="width:${pct}%"></i></span><span class="sb-c">${s.scaricati}/${s.totali}</span></div>`;
-      }).join("")}</div>`);
+      rows.push(seasonBarsHtml(det.stagioni.map((s) => ({ n: s.numero, have: s.scaricati, tot: s.totali, off: !s.monitorata }))));
     }
   }
   if (r.download) rows.push(progressHtml(r.download));
@@ -450,7 +495,7 @@ async function loadRequestState(i) {
   b.hidden = !svc;
   $("#d-more").hidden = true;
   panel.hidden = true;
-  if (!svc && !state.servizi.plex) return;
+  if (!svc && !state.servizi.plex && i.type !== "tv") return;
   if (svc) {
     b.className = "btn-request loading";
     b.disabled = true;

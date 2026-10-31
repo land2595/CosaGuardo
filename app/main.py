@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -176,6 +177,14 @@ async def _safe(coro, default=None):
         return default
 
 
+async def _none():
+    return None
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
 async def _plex_find(kind: str, tmdb_id: int, tvdb_id: int | None = None) -> dict | None:
     if not plex.configured:
         return None
@@ -231,12 +240,24 @@ async def get_richiesta(item_id: str):
         raise HTTPException(404, "Titolo non trovato.")
     svc = _service(item["type"])
     res: dict = {"stato": None, "configurato": svc.configured, "servizio": svc.name, "dettagli": None,
-                 "download": None, "plex": None}
+                 "download": None, "plex": None, "serie": None}
     try:
         arr_id = await _arr_id(item)
     except TMDBError as e:
         return res | {"stato": SCONOSCIUTO, "errore": str(e)}
-    res["plex"] = await _plex_find(item["type"], item["tmdb_id"], arr_id if item["type"] == "tv" else None)
+    tv = item["type"] == "tv"
+    res["plex"], res["serie"] = await asyncio.gather(
+        _plex_find(item["type"], item["tmdb_id"], arr_id if tv else None),
+        _safe(catalog.tv_info(item["tmdb_id"])) if tv else _none(),
+    )
+    if tv and res["plex"]:
+        # Episodi su Plex stagione per stagione, confrontati con quelli usciti
+        per_season = await _safe(plex.seasons(res["plex"]["rating_key"]), {})
+        aired = {s["numero"]: s for s in (res["serie"] or {}).get("stagioni", [])}
+        res["plex"] = res["plex"] | {"per_stagione": [
+            {"numero": n, "episodi": per_season.get(n, 0), "totali": aired[n]["episodi"] if n in aired else None}
+            for n in sorted(set(per_season) | {n for n, s in aired.items() if s["data"] and s["data"] <= _today()})
+        ]}
     if not svc.configured:
         return res
     try:

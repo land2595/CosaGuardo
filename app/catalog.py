@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
@@ -24,6 +25,12 @@ COMPANY_HINTS = {"netflix": "netflix", "amazon": "prime", "apple original": "app
                  "disney+": "disney", "paramount+": "paramount", "sky original": "sky", "sky studios": "sky"}
 IMG = os.getenv("TMDB_IMAGE_URL", "https://image.tmdb.org/t/p")
 MONETIZATION = "flatrate|free|ads"
+
+# Stato di una serie su TMDB
+TV_STATUS = {
+    "Returning Series": "in_corso", "In Production": "in_produzione", "Planned": "in_produzione",
+    "Pilot": "in_produzione", "Ended": "terminata", "Canceled": "cancellata",
+}
 
 # "Da non perdere"
 MUST_SEE_DAYS = 183           # usciti negli ultimi 6 mesi
@@ -50,6 +57,7 @@ class Catalog:
         self._provider_map: dict[int, str] = {}
         self._details: dict[str, dict] = {}
         self._trailers: dict[str, dict | None] = {}
+        self._tv_info: dict[int, tuple[float, dict]] = {}
         self._sem = asyncio.Semaphore(8)
         self.imdb = ImdbRatings(self.s.data_dir, self.s.imdb_ratings_url, self.s.imdb_ratings)
         self._cache_file = os.path.join(self.s.data_dir, "catalogo.json")
@@ -549,14 +557,45 @@ class Catalog:
         start = next((s.get("air_date") for s in d.get("seasons", []) if s.get("season_number") == season), None)
         return start or d.get("first_air_date")
 
-    async def tv_seasons(self, tmdb_id: int) -> list[dict]:
+    async def tv_info(self, tmdb_id: int) -> dict:
+        """Stagioni, stato della serie (in corso, terminata...) e prossima uscita. Cache di 30 minuti."""
+        cached = self._tv_info.get(tmdb_id)
+        if cached and time.monotonic() - cached[0] < 1800:
+            return cached[1]
         async with self._client() as client:
             d = await self._get(client, f"/tv/{tmdb_id}")
-        return [
+        today = datetime.now(timezone.utc).date().isoformat()
+        seasons = [
             {"numero": s["season_number"], "nome": s.get("name"), "episodi": s.get("episode_count") or 0,
              "data": s.get("air_date")}
             for s in d.get("seasons", []) if s.get("season_number", 0) > 0
         ]
+        last = d.get("last_episode_to_air") or {}
+        nxt = d.get("next_episode_to_air") or {}
+        prossimo = None
+        if nxt.get("air_date"):
+            prossimo = {"data": nxt["air_date"], "stagione": nxt.get("season_number"),
+                        "episodio": nxt.get("episode_number"),
+                        "nuova_stagione": nxt.get("episode_number") == 1}
+        else:
+            # Stagione annunciata ma senza episodi in calendario
+            future = [s for s in seasons if s["numero"] > (last.get("season_number") or 0)
+                      and (not s["data"] or s["data"] > today)]
+            if future:
+                s = future[0]
+                prossimo = {"data": s["data"], "stagione": s["numero"], "episodio": 1, "nuova_stagione": True}
+        info = {
+            "stato": TV_STATUS.get(d.get("status"), "in_corso"),
+            "prossimo": prossimo,
+            "ultimo": {"data": last.get("air_date"), "stagione": last.get("season_number"),
+                       "episodio": last.get("episode_number")} if last else None,
+            "stagioni": seasons,
+        }
+        self._tv_info[tmdb_id] = (time.monotonic(), info)
+        return info
+
+    async def tv_seasons(self, tmdb_id: int) -> list[dict]:
+        return (await self.tv_info(tmdb_id))["stagioni"]
 
     # ------------------------------------------------------- trailer e id
 

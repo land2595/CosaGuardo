@@ -597,6 +597,13 @@ footer p { margin: 4px 0; }
 .sb-bar { flex: 1; height: 5px; border-radius: 5px; background: #ffffff1c; overflow: hidden; }
 .sb-bar i { display: block; height: 100%; background: linear-gradient(90deg, #3ecf8e, #7ee2b0); border-radius: 5px; }
 .sb-c { color: var(--muted); font-variant-numeric: tabular-nums; }
+.sb.full .sb-c { color: var(--text); }
+.season-bars.plex .sb-bar i { background: linear-gradient(90deg, #e5a00d, #ffc13a); }
+.season-bars.plex .sb.full .sb-c { color: #ffc13a; }
+.st-row.serie .st-icon { background: #ffffff14; color: var(--text); font-size: 15px; }
+.st-row.serie.next .st-icon { background: #e5091426; }
+.st-row.serie.ended .st-icon { font-size: 11px; color: var(--muted); }
+.st-row.serie.next b { color: var(--gold); }
 
 .btn-request.more { --c: var(--gold); border-style: dashed; }
 

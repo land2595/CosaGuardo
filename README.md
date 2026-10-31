@@ -14,7 +14,8 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 - Le serie hanno un'etichetta che dice cosa c'è di nuovo: *Nuova serie*, *Nuova stagione* o *Nuovi episodi*.
 - **Trailer** nella scheda di ogni titolo, in italiano quando c'è.
 - **Richieste**: un pulsante "Richiedi" manda i film a **Radarr** e le serie a **Sonarr**, che li cercano e li scaricano. Per le serie scegli se richiedere tutte le stagioni o solo alcune. La sezione *Le mie richieste* mostra lo stato di ognuna, il progresso del download con il tempo rimanente e gli episodi scaricati per stagione.
-- **Plex**: se colleghi il tuo server Plex, CosaGuardo segna i titoli che hai già, mostra quante stagioni ed episodi ci sono e apre il titolo in Plex con un clic.
+- **Plex**: se colleghi il tuo server Plex, CosaGuardo segna i titoli che hai già, mostra stagione per stagione quanti episodi hai e apre il titolo in Plex con un clic.
+- **Stato della serie**: la scheda di ogni serie dice quando esce la prossima stagione (o il prossimo episodio) oppure se la serie è terminata o cancellata.
 
 ![Home](docs/home.png)
 
@@ -164,7 +165,7 @@ Per i titoli **in arrivo** TMDB non sa ancora su quale piattaforma usciranno. Co
 | `POST /api/aggiorna` | Forza un aggiornamento immediato. |
 | `GET /api/trailer/{movie\|tv}/{id}` | Il trailer YouTube del titolo, in italiano se disponibile. |
 | `GET /api/richieste` | Le richieste fatte, con stato, download in corso e presenza su Plex. |
-| `GET /api/richieste/{id}` | Stato di un titolo (es. `tv-123`): Radarr/Sonarr, download e Plex. |
+| `GET /api/richieste/{id}` | Stato di un titolo (es. `tv-123`): Radarr/Sonarr, download, Plex stagione per stagione e, per le serie, prossima uscita o fine della serie. |
 | `GET /api/serie/{tmdb_id}/stagioni` | Le stagioni di una serie, con episodi richiesti, scaricati e presenti su Plex. |
 | `POST /api/richieste` | Richiede un titolo (`{"id": "movie-123"}`): i film vanno a Radarr, le serie a Sonarr. Per le serie puoi indicare le stagioni: `{"id": "tv-123", "stagioni": [1, 2]}` (senza, le richiede tutte). |
 | `GET /api/plex` | Gli id TMDB dei film e delle serie già presenti su Plex. |

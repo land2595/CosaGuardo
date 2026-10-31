@@ -188,3 +188,14 @@ def test_da_non_perdere_without_imdb(tmp_path):
     must = cat.data["da_non_perdere"]
     assert must and all(i["score"]["fonte"] == "TMDB" and i["rating"] >= 7 for i in must)
     assert isinstance(cat.imdb, ImdbRatings) and not (tmp_path / "imdb-ratings.tsv.gz").exists()
+
+
+def test_series_status_and_plex_seasons(services):
+    r = services.get("/api/richieste/tv-2003").json()
+    assert r["serie"]["stato"] == "terminata"
+    per = {s["numero"]: s for s in r["plex"]["per_stagione"]}
+    assert per[1]["episodi"] == 8 and per[1]["totali"] == 8
+    assert per[2]["episodi"] == 6 and per[2]["totali"] == 8
+    nxt = services.get("/api/richieste/tv-2102").json()["serie"]
+    assert nxt["stato"] == "in_corso" and nxt["prossimo"]["nuova_stagione"] and nxt["prossimo"]["stagione"] == 3
+    assert services.get("/api/richieste/movie-1001").json()["serie"] is None
