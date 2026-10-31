@@ -86,3 +86,13 @@ def test_errors(services, monkeypatch):
     assert r.status_code == 400 and "non e' configurato" in r.json()["detail"]
     with pytest.raises(ArrError):
         asyncio.run(Radarr("http://127.0.0.1:1", "x").status(1))
+
+
+def test_index_busts_cache(services):
+    r = services.get("/")
+    assert r.headers["cache-control"] == "no-cache"
+    v = main.ASSET_VERSION
+    assert f'/static/app.js?v={v}"' in r.text and f'/static/style.css?v={v}"' in r.text
+    assert "immutable" in services.get(f"/static/app.js?v={v}").headers["cache-control"]
+    assert services.get("/static/app.js").headers["cache-control"] == "no-cache"
+    assert "versione" in services.get("/api/stato").json()

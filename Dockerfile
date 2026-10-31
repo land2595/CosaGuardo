@@ -8,6 +8,8 @@ WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
 COPY app ./app
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh && mkdir -p /data

@@ -164,6 +164,7 @@ function renderChips() {
 }
 
 function renderStatus(s) {
+  if (s.versione) $("#version").textContent = `CosaGuardo · versione ${s.versione}`;
   const el = $("#status");
   if (s.aggiornamento_in_corso) {
     el.innerHTML = `<span class="dot busy"></span> Aggiornamento in corso…`;

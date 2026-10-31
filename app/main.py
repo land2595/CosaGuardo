@@ -1,10 +1,13 @@
 import asyncio
+import hashlib
 import logging
+import os
+import re
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from pydantic import BaseModel
@@ -25,6 +28,20 @@ sonarr = Sonarr(settings.sonarr_url, settings.sonarr_api_key,
                 language_profile=settings.sonarr_language_profile)
 requests = Requests(settings.data_dir)
 STATIC = Path(__file__).parent / "static"
+
+
+def _static_hash() -> str:
+    h = hashlib.sha1()
+    for f in sorted(STATIC.rglob("*")):
+        if f.is_file():
+            h.update(f.read_bytes())
+    return h.hexdigest()[:8]
+
+
+# Versione mostrata nella pagina; l'hash dei file statici serve anche a far
+# scaricare al browser i file nuovi dopo ogni aggiornamento.
+APP_VERSION = (os.getenv("APP_VERSION") or "dev")[:7]
+ASSET_VERSION = _static_hash()
 
 
 async def refresher() -> None:
@@ -72,6 +89,7 @@ def get_catalogo(
         "aggiornamento_in_corso": catalog.refreshing,
         "errore": catalog.error,
         "serve_chiave": catalog.needs_key,
+        "versione": APP_VERSION,
         "piattaforme": d.get("piattaforme", {}),
         "novita": _filter(d.get("novita", []), tipo, piattaforma, q),
         "tendenze": _filter(d.get("tendenze", []), tipo, piattaforma, q),
@@ -89,6 +107,7 @@ def get_stato():
         "novita": len(d.get("novita", [])),
         "tendenze": len(d.get("tendenze", [])),
         "intervallo_minuti": settings.refresh_minutes,
+        "versione": APP_VERSION,
     }
 
 
@@ -214,9 +233,21 @@ def health():
     return {"ok": True}
 
 
+@app.middleware("http")
+async def cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/static/") and request.query_params.get("v") == ASSET_VERSION:
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    html = re.sub(r'(/static/[\w./-]+\.(?:css|js|svg))"', rf'\1?v={ASSET_VERSION}"', html)
+    return HTMLResponse(html)
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
