@@ -36,6 +36,21 @@ def _common(app: FastAPI):
                                 "trackedDownloadState": "downloading"})
         return {"page": 1, "totalRecords": len(records), "records": records}
 
+    @app.get("/api/v3/tag")
+    def tags(x_api_key: str = Header(None)):
+        _check(x_api_key)
+        return app.state.tags
+
+    @app.post("/api/v3/tag", status_code=201)
+    async def add_tag(request: Request, x_api_key: str = Header(None)):
+        _check(x_api_key)
+        label = (await request.json())["label"]
+        if label != label.lower() or " " in label:
+            raise HTTPException(400, "label non valida")
+        tag = {"id": max([t["id"] for t in app.state.tags], default=0) + 1, "label": label}
+        app.state.tags.append(tag)
+        return tag
+
     @app.get("/api/v3/rootfolder")
     def roots(x_api_key: str = Header(None)):
         _check(x_api_key)
@@ -46,6 +61,7 @@ radarr = FastAPI()
 _common(radarr)
 radarr.state.movies = []
 radarr.state.queue = []
+radarr.state.tags = [{"id": 1, "label": "film-famiglia"}]
 
 
 @radarr.get("/api/v3/movie")
@@ -79,6 +95,7 @@ _common(sonarr)
 sonarr.state.series = []
 sonarr.state.queue = []
 sonarr.state.commands = []
+sonarr.state.tags = [{"id": 1, "label": "anime"}, {"id": 2, "label": "cosaguardo"}]
 
 
 @sonarr.get("/api/v3/languageprofile")

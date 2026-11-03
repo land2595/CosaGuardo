@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.admin import Admin
 from app.arr import ArrError, Radarr, Requests, Sonarr
 from app.catalog import Catalog
 from app.plex import Plex
@@ -23,6 +24,8 @@ def services(tmp_path, monkeypatch):
     mock_arr.sonarr.state.series = []
     mock_arr.sonarr.state.queue = []
     mock_arr.sonarr.state.commands = []
+    mock_arr.radarr.state.tags = [{"id": 1, "label": "film-famiglia"}]
+    mock_arr.sonarr.state.tags = [{"id": 1, "label": "anime"}, {"id": 2, "label": "cosaguardo"}]
     s = Settings()
     s.tmdb_api_key = "test"
     s.data_dir = str(tmp_path)
@@ -42,6 +45,8 @@ def services(tmp_path, monkeypatch):
     plex._client = _mock_client(mock_arr.plex, headers={"X-Plex-Token": mock_arr.PLEX_TOKEN})
     monkeypatch.setattr(main, "plex", plex)
     monkeypatch.setattr(main, "requests", Requests(str(tmp_path)))
+    monkeypatch.setattr(main, "admin", Admin(str(tmp_path)))
+    main.apply_admin_settings()
     return TestClient(main.app)
 
 
@@ -199,3 +204,83 @@ def test_series_status_and_plex_seasons(services):
     nxt = services.get("/api/richieste/tv-2102").json()["serie"]
     assert nxt["stato"] == "in_corso" and nxt["prossimo"]["nuova_stagione"] and nxt["prossimo"]["stagione"] == 3
     assert services.get("/api/richieste/movie-1001").json()["serie"] is None
+
+
+# ---------------------------------------------------------------- menu admin
+
+def _login(client, pin="2468"):
+    r = client.post("/api/admin/pin", json={"pin": pin})
+    assert r.status_code == 200
+    return {"X-Admin-Token": r.json()["token"]}
+
+
+def test_admin_pin_first_setup_and_login(services, tmp_path):
+    assert services.get("/api/admin").json() == {"pin_impostato": False, "pin_da_env": False, "sbloccato": False}
+    assert services.get("/api/admin/impostazioni").status_code == 401
+    assert services.post("/api/admin/pin", json={"pin": "12"}).status_code == 400
+
+    h = _login(services)
+    assert services.get("/api/admin", headers=h).json()["sbloccato"]
+    # Il PIN non si puo' reimpostare senza conoscere quello attuale
+    assert services.post("/api/admin/pin", json={"pin": "0000"}).status_code == 403
+    assert "2468" not in (tmp_path / "impostazioni.json").read_text()
+
+    assert services.post("/api/admin/accesso", json={"pin": "1111"}).status_code == 401
+    assert services.post("/api/admin/accesso", json={"pin": "2468"}).status_code == 200
+
+    services.post("/api/admin/esci", headers=h)
+    assert services.get("/api/admin/impostazioni", headers=h).status_code == 401
+
+    # Cambio PIN
+    h = {"X-Admin-Token": services.post("/api/admin/accesso", json={"pin": "2468"}).json()["token"]}
+    assert services.put("/api/admin/pin", headers=h, json={"attuale": "0000", "nuovo": "1357"}).status_code == 403
+    assert services.put("/api/admin/pin", headers=h, json={"attuale": "2468", "nuovo": "1357"}).status_code == 200
+    assert services.post("/api/admin/accesso", json={"pin": "1357"}).status_code == 200
+    # Il PIN resta dopo un riavvio
+    assert Admin(str(tmp_path)).login("1357")
+
+
+def test_admin_lockout_after_wrong_pins(services):
+    _login(services)
+    for _ in range(4):
+        assert services.post("/api/admin/accesso", json={"pin": "0000"}).status_code == 401
+    assert services.post("/api/admin/accesso", json={"pin": "0000"}).status_code == 429
+    # Bloccato anche con il PIN giusto
+    assert services.post("/api/admin/accesso", json={"pin": "2468"}).status_code == 429
+
+
+def test_admin_pin_from_env(tmp_path):
+    a = Admin(str(tmp_path), env_pin="9876")
+    assert a.pin_set and a.pin_from_env
+    assert a.login("9876")
+    with pytest.raises(Exception):
+        a.create_pin("1234")
+
+
+def test_admin_sonarr_tags_applied_to_new_series(services):
+    h = _login(services)
+    conf = services.get("/api/admin/impostazioni", headers=h).json()
+    assert conf["sonarr"]["opzioni"]["tag"] == [{"id": 1, "nome": "anime"}, {"id": 2, "nome": "cosaguardo"}]
+    assert conf["sonarr"]["opzioni"]["cartelle"] == ["/media/principale", "/media/altro"]
+    assert conf["sonarr"]["valori"] == {"tag": [], "profilo_qualita": "", "cartella": ""}
+
+    # Nuovo tag creato da CosaGuardo (il nome viene reso valido per Sonarr)
+    t = services.post("/api/admin/tag", headers=h, json={"servizio": "sonarr", "nome": "Da Vedere"}).json()
+    assert t == {"id": 3, "nome": "da-vedere"}
+    assert services.post("/api/admin/tag", headers=h, json={"servizio": "sonarr", "nome": "da vedere"}).json()["id"] == 3
+
+    r = services.put("/api/admin/impostazioni", headers=h, json={
+        "sonarr": {"tag": [2, 3], "profilo_qualita": "HD-1080p", "cartella": "/media/altro"}})
+    assert r.json()["sonarr"] == {"tag": [2, 3], "profilo_qualita": "HD-1080p", "cartella": "/media/altro"}
+    assert services.put("/api/admin/impostazioni", json={"sonarr": {"tag": []}}).status_code == 401
+
+    # Un tag cancellato in Sonarr viene ignorato
+    mock_arr.sonarr.state.tags = [t for t in mock_arr.sonarr.state.tags if t["id"] != 3]
+    services.post("/api/richieste", json={"id": "tv-2001"})
+    added = mock_arr.sonarr.state.series[0]
+    assert added["tags"] == [2]
+    assert added["qualityProfileId"] == 4 and added["rootFolderPath"] == "/media/altro"
+
+    # I film non prendono i tag di Sonarr
+    services.post("/api/richieste", json={"id": "movie-1001"})
+    assert mock_arr.radarr.state.movies[0]["tags"] == []
