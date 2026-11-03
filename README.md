@@ -15,6 +15,7 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 - **Trailer** nella scheda di ogni titolo, in italiano quando c'è.
 - **Richieste**: un pulsante "Richiedi" manda i film a **Radarr** e le serie a **Sonarr**, che li cercano e li scaricano. Per le serie scegli se richiedere tutte le stagioni o solo alcune. La sezione *Le mie richieste* mostra lo stato di ognuna, il progresso del download con il tempo rimanente e gli episodi scaricati per stagione.
 - **Plex**: se colleghi il tuo server Plex, CosaGuardo segna i titoli che hai già, mostra stagione per stagione quanti episodi hai e apre il titolo in Plex con un clic.
+- **Menu admin con PIN**: dall'ingranaggio in alto a destra scegli i tag di Sonarr e Radarr da applicare ai titoli che aggiungi, il profilo di qualità e la cartella.
 - **Stato della serie**: la scheda di ogni serie dice quando esce la prossima stagione (o il prossimo episodio) oppure se la serie è terminata o cancellata.
 
 ![Home](docs/home.png)
@@ -101,6 +102,18 @@ Puoi configurarne anche uno solo. Nella scheda di un titolo compare il pulsante 
 - Se non indichi profilo di qualità e cartella, vengono usati i primi configurati in Radarr/Sonarr. Puoi sceglierli per nome con `RADARR_QUALITY_PROFILE=HD-1080p` e `RADARR_ROOT_FOLDER=/movies` (lo stesso per Sonarr).
 - Funziona con Radarr v3 o successivi e con Sonarr v3 e v4.
 
+## Menu admin
+
+L'ingranaggio in alto a destra apre la *cabina di proiezione*, un menu protetto da PIN per regolare le impostazioni senza toccare il container.
+
+![Menu admin](docs/admin.png)
+
+- **PIN**: la prima volta che apri il menu scegli un PIN da 4 a 8 cifre. Viene salvato in `/data/impostazioni.json` solo come hash, e puoi cambiarlo dal menu. Se preferisci fissarlo nella configurazione usa `ADMIN_PIN=1234`: in quel caso dal menu non si può cambiare. Dopo 5 PIN sbagliati il menu si blocca per 5 minuti.
+- **Tag**: scegli i tag di Sonarr da applicare alle serie che aggiungi da CosaGuardo (e quelli di Radarr per i film). Puoi crearne di nuovi direttamente dal menu. I tag valgono per i titoli aggiunti da quel momento in poi.
+- **Profilo di qualità e cartella**: sostituiscono `SONARR_QUALITY_PROFILE`, `SONARR_ROOT_FOLDER` e le corrispondenti di Radarr. Con *Predefinito* si torna al valore della configurazione.
+
+Se non hai ancora scelto un PIN, il primo che apre il menu lo imposta: fallo subito dopo l'installazione, soprattutto se CosaGuardo è raggiungibile da fuori casa.
+
 ## Collegare Plex
 
 Con Plex collegato, le locandine dei titoli che hai già mostrano **Su Plex**, e la scheda dice quante stagioni ed episodi hai e ha il pulsante **Apri in Plex**. Servono l'indirizzo del server e il token:
@@ -131,6 +144,7 @@ Tutte le opzioni sono variabili d'ambiente (`-e NOME=valore` con `docker run`, o
 | `SONARR_URL` / `SONARR_API_KEY` | | Indirizzo e chiave API di Sonarr, per richiedere le serie. |
 | `SONARR_QUALITY_PROFILE` / `SONARR_ROOT_FOLDER` | il primo | Profilo di qualità e cartella delle serie (nome o id). |
 | `SONARR_LANGUAGE_PROFILE` | il primo | Solo Sonarr v3: profilo lingua (nome o id). |
+| `ADMIN_PIN` | | PIN del menu admin (4-8 cifre). Se vuoto si sceglie dalla pagina. |
 | `PLEX_URL` / `PLEX_TOKEN` | | Indirizzo del server Plex e token, per vedere cosa hai già. |
 | `IMDB_RATINGS` | `1` | Usa i voti IMDb in *Da non perdere*. Con `0` usa solo quelli di TMDB e non scarica niente. |
 | `UPCOMING_DAYS` | `60` | Quanti giorni avanti guarda la sezione *Prossimamente*. |
@@ -168,6 +182,10 @@ Per i titoli **in arrivo** TMDB non sa ancora su quale piattaforma usciranno. Co
 | `GET /api/richieste/{id}` | Stato di un titolo (es. `tv-123`): Radarr/Sonarr, download, Plex stagione per stagione e, per le serie, prossima uscita o fine della serie. |
 | `GET /api/serie/{tmdb_id}/stagioni` | Le stagioni di una serie, con episodi richiesti, scaricati e presenti su Plex. |
 | `POST /api/richieste` | Richiede un titolo (`{"id": "movie-123"}`): i film vanno a Radarr, le serie a Sonarr. Per le serie puoi indicare le stagioni: `{"id": "tv-123", "stagioni": [1, 2]}` (senza, le richiede tutte). |
+| `GET /api/admin` | Se il PIN è impostato e se la sessione (header `X-Admin-Token`) è valida. |
+| `POST /api/admin/pin` / `POST /api/admin/accesso` | Imposta il PIN la prima volta / entra con il PIN (`{"pin": "1234"}`). Restituiscono il token di sessione. |
+| `GET` / `PUT /api/admin/impostazioni` | Tag, profilo di qualità e cartella di Sonarr e Radarr (serve il token). |
+| `POST /api/admin/tag` | Crea un tag in Sonarr o Radarr: `{"servizio": "sonarr", "nome": "da-vedere"}` (serve il token). |
 | `GET /api/plex` | Gli id TMDB dei film e delle serie già presenti su Plex. |
 | `POST /api/chiave` | Imposta la chiave TMDB (solo se non è ancora configurata). |
 | `GET /health` | Controllo di salute per Docker. |
@@ -200,6 +218,7 @@ Struttura:
 app/
   config.py      piattaforme e impostazioni
   catalog.py     raccolta dati da TMDB, unione dei doppioni, trailer, cache
+  admin.py       menu admin: PIN e impostazioni salvate in /data
   arr.py         richieste a Radarr e Sonarr
   main.py        server FastAPI e aggiornamento periodico
   static/        interfaccia (HTML, CSS, JS, font)

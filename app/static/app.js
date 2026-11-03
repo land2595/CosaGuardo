@@ -757,6 +757,250 @@ $("#setup-form").addEventListener("submit", async (e) => {
   }
 });
 
+// ------------------------------------------------------------- menu admin
+
+const admin = { token: null, conf: null, values: {} };
+try { admin.token = sessionStorage.getItem("adminToken"); } catch { /* ignora */ }
+
+function setAdminToken(t) {
+  admin.token = t;
+  try { t ? sessionStorage.setItem("adminToken", t) : sessionStorage.removeItem("adminToken"); } catch { /* ignora */ }
+}
+
+async function adminFetch(url, opts = {}) {
+  const r = await fetch(url, {
+    ...opts,
+    headers: { "Content-Type": "application/json", ...(admin.token ? { "X-Admin-Token": admin.token } : {}) },
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = new Error(typeof body.detail === "string" ? body.detail : "Qualcosa è andato storto.");
+    err.status = r.status;
+    throw err;
+  }
+  return body;
+}
+
+function adminMsg(sel, text, isError) {
+  const m = $(sel);
+  m.textContent = text || "";
+  m.className = `a-msg ${isError ? "err" : "ok"}`;
+}
+
+async function openAdmin() {
+  const dlg = $("#admin");
+  $("#a-lock").hidden = true;
+  $("#a-panel").hidden = true;
+  if (!dlg.open) dlg.showModal();
+  let st;
+  try {
+    st = await adminFetch("/api/admin");
+  } catch (err) {
+    showLock(true);
+    adminMsg("#a-lock-msg", err.message, true);
+    return;
+  }
+  if (st.sbloccato) return showPanel();
+  setAdminToken(null);
+  showLock(st.pin_impostato);
+}
+
+function showLock(pinSet) {
+  const form = $("#a-lock");
+  form.dataset.mode = pinSet ? "login" : "create";
+  $("#a-lock-lead").textContent = pinSet
+    ? "Inserisci il PIN per cambiare le impostazioni."
+    : "Primo accesso: scegli un PIN da 4 a 8 cifre. Servirà per entrare in questo menu.";
+  $("#a-pin2-wrap").hidden = pinSet;
+  $("#a-pin2").required = !pinSet;
+  $("#a-lock-btn").textContent = pinSet ? "Entra" : "Imposta il PIN";
+  $("#a-pin").value = "";
+  $("#a-pin2").value = "";
+  adminMsg("#a-lock-msg", "");
+  $("#a-panel").hidden = true;
+  form.hidden = false;
+  $("#a-pin").focus();
+}
+
+$("#a-lock").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const pin = $("#a-pin").value.trim();
+  const create = form.dataset.mode === "create";
+  if (!/^\d{4,8}$/.test(pin)) return adminMsg("#a-lock-msg", "Il PIN deve avere da 4 a 8 cifre.", true);
+  if (create && pin !== $("#a-pin2").value.trim()) return adminMsg("#a-lock-msg", "I due PIN non coincidono.", true);
+  const btn = $("#a-lock-btn");
+  btn.disabled = true;
+  try {
+    const r = await adminFetch(create ? "/api/admin/pin" : "/api/admin/accesso", {
+      method: "POST", body: JSON.stringify({ pin }),
+    });
+    setAdminToken(r.token);
+    await showPanel();
+  } catch (err) {
+    form.classList.remove("shake");
+    void form.offsetWidth;
+    form.classList.add("shake");
+    $("#a-pin").value = "";
+    $("#a-pin").focus();
+    adminMsg("#a-lock-msg", err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function optionList(list, current, fallback) {
+  const def = `<option value="">Predefinito${fallback ? ` (${esc(fallback)})` : " (il primo)"}</option>`;
+  return def + list.map((o) => {
+    const v = typeof o === "string" ? o : String(o.id);
+    const label = typeof o === "string" ? o : o.nome;
+    const sel = current && (current === v || (typeof o !== "string" && current.toLowerCase() === o.nome.toLowerCase()));
+    return `<option value="${esc(v)}"${sel ? " selected" : ""}>${esc(label)}</option>`;
+  }).join("");
+}
+
+function serviceHtml(key, s) {
+  const intro = key === "sonarr"
+    ? "Tag, profilo e cartella applicati alle serie che aggiungi da CosaGuardo."
+    : "Tag, profilo e cartella applicati ai film che aggiungi da CosaGuardo.";
+  const head = `<div class="a-sec-head"><h3>${esc(s.nome)}</h3><span class="a-pill ${s.configurato && !s.errore ? "on" : ""}">${
+    !s.configurato ? "Non collegato" : s.errore ? "Non raggiungibile" : "Collegato"}</span></div>`;
+  if (!s.configurato) {
+    return `<section class="a-section off">${head}<p class="a-note">Aggiungi <code>${key.toUpperCase()}_URL</code> e <code>${key.toUpperCase()}_API_KEY</code> al container per collegarlo.</p></section>`;
+  }
+  if (s.errore || !s.opzioni) {
+    return `<section class="a-section off">${head}<p class="a-note err">${esc(s.errore || "Opzioni non disponibili.")}</p></section>`;
+  }
+  const v = admin.values[key];
+  const tags = s.opzioni.tag.length
+    ? s.opzioni.tag.map((t) => `<button type="button" class="a-tag${v.tag.includes(t.id) ? " on" : ""}" data-svc="${key}" data-tag="${t.id}" aria-pressed="${v.tag.includes(t.id)}"><i aria-hidden="true">✓</i>${esc(t.nome)}</button>`).join("")
+    : `<span class="a-note">Nessun tag in ${esc(s.nome)}: creane uno qui accanto.</span>`;
+  return `<section class="a-section" data-svc="${key}">
+    ${head}
+    <p class="a-note">${intro}</p>
+    <div class="a-field">
+      <span class="ticket-label">Tag</span>
+      <div class="a-tags">${tags}</div>
+      <form class="a-newtag" data-svc="${key}">
+        <input type="text" placeholder="Nuovo tag" aria-label="Nuovo tag per ${esc(s.nome)}" maxlength="40" autocomplete="off" spellcheck="false">
+        <button type="submit" class="a-link">＋ Crea</button>
+      </form>
+    </div>
+    <div class="a-grid">
+      <label class="a-field"><span class="ticket-label">Profilo di qualità</span>
+        <select data-svc="${key}" data-k="profilo_qualita">${optionList(s.opzioni.profili_qualita, v.profilo_qualita, s.predefiniti.profilo_qualita)}</select></label>
+      <label class="a-field"><span class="ticket-label">Cartella</span>
+        <select data-svc="${key}" data-k="cartella">${optionList(s.opzioni.cartelle, v.cartella, s.predefiniti.cartella)}</select></label>
+    </div>
+  </section>`;
+}
+
+function renderAdmin() {
+  const c = admin.conf;
+  $("#a-services").innerHTML = ["sonarr", "radarr"].map((k) => serviceHtml(k, c[k])).join("");
+  const anyEditable = ["sonarr", "radarr"].some((k) => c[k].configurato && c[k].opzioni);
+  $("#a-save").closest(".a-save").hidden = !anyEditable;
+  $("#a-pinchange").hidden = c.pin_da_env;
+}
+
+async function showPanel() {
+  $("#a-lock").hidden = true;
+  $("#a-panel").hidden = false;
+  $("#a-services").innerHTML = `<p class="a-note">Leggo le impostazioni di Sonarr e Radarr…</p>`;
+  adminMsg("#a-save-msg", "");
+  try {
+    admin.conf = await adminFetch("/api/admin/impostazioni");
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    $("#a-services").innerHTML = `<p class="a-note err">${esc(err.message)}</p>`;
+    return;
+  }
+  admin.values = {};
+  for (const k of ["sonarr", "radarr"]) admin.values[k] = structuredClone(admin.conf[k].valori);
+  renderAdmin();
+}
+
+$("#a-services").addEventListener("click", (e) => {
+  const b = e.target.closest(".a-tag");
+  if (!b) return;
+  const list = admin.values[b.dataset.svc].tag;
+  const id = Number(b.dataset.tag);
+  const i = list.indexOf(id);
+  i >= 0 ? list.splice(i, 1) : list.push(id);
+  b.classList.toggle("on", i < 0);
+  b.setAttribute("aria-pressed", i < 0);
+  adminMsg("#a-save-msg", "");
+});
+
+$("#a-services").addEventListener("change", (e) => {
+  const sel = e.target.closest("select[data-svc]");
+  if (!sel) return;
+  admin.values[sel.dataset.svc][sel.dataset.k] = sel.value;
+  adminMsg("#a-save-msg", "");
+});
+
+$("#a-services").addEventListener("submit", async (e) => {
+  const form = e.target.closest(".a-newtag");
+  if (!form) return;
+  e.preventDefault();
+  const input = form.querySelector("input");
+  const nome = input.value.trim();
+  if (!nome) return input.focus();
+  const svc = form.dataset.svc;
+  try {
+    const t = await adminFetch("/api/admin/tag", { method: "POST", body: JSON.stringify({ servizio: svc, nome }) });
+    const opts = admin.conf[svc].opzioni.tag;
+    if (!opts.some((x) => x.id === t.id)) opts.push(t);
+    if (!admin.values[svc].tag.includes(t.id)) admin.values[svc].tag.push(t.id);
+    renderAdmin();
+    adminMsg("#a-save-msg", `Tag "${t.nome}" pronto: salva per applicarlo.`, false);
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    adminMsg("#a-save-msg", err.message, true);
+  }
+});
+
+$("#a-save").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const body = {};
+  for (const k of ["sonarr", "radarr"]) if (admin.conf[k].configurato && admin.conf[k].opzioni) body[k] = admin.values[k];
+  try {
+    const saved = await adminFetch("/api/admin/impostazioni", { method: "PUT", body: JSON.stringify(body) });
+    for (const k of Object.keys(body)) admin.conf[k].valori = saved[k];
+    adminMsg("#a-save-msg", "Impostazioni salvate. Valgono per i prossimi titoli che richiedi.", false);
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    adminMsg("#a-save-msg", err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#a-pin-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await adminFetch("/api/admin/pin", {
+      method: "PUT", body: JSON.stringify({ attuale: $("#a-pin-old").value.trim(), nuovo: $("#a-pin-new").value.trim() }),
+    });
+    e.currentTarget.reset();
+    adminMsg("#a-pin-msg", "PIN cambiato.", false);
+  } catch (err) {
+    adminMsg("#a-pin-msg", err.message, true);
+  }
+});
+
+$("#a-logout").addEventListener("click", async () => {
+  await adminFetch("/api/admin/esci", { method: "POST" }).catch(() => {});
+  setAdminToken(null);
+  showLock(true);
+});
+
+$("#admin-open").addEventListener("click", openAdmin);
+$("#admin").addEventListener("click", (e) => {
+  if (e.target.matches("[data-close]") || e.target === e.currentTarget) e.currentTarget.close();
+});
+
 // ---------------------------------------------------------------- eventi
 
 function setView(view) {

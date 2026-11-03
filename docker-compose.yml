@@ -22,6 +22,8 @@ services:
       SONARR_API_KEY: ${SONARR_API_KEY:-}
       SONARR_QUALITY_PROFILE: ${SONARR_QUALITY_PROFILE:-}
       SONARR_ROOT_FOLDER: ${SONARR_ROOT_FOLDER:-}
+      # Facoltativo: PIN del menu admin (se vuoto lo scegli dalla pagina)
+      ADMIN_PIN: ${ADMIN_PIN:-}
       # Facoltativi: Plex, per vedere cosa hai gia'
       PLEX_URL: ${PLEX_URL:-}
       PLEX_TOKEN: ${PLEX_TOKEN:-}

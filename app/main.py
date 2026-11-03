@@ -7,12 +7,13 @@ from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from pydantic import BaseModel
 
+from .admin import SERVICES, Admin, PinError
 from .arr import ASSENTE, SCONOSCIUTO, ArrError, Radarr, Requests, Sonarr
 from .catalog import Catalog, TMDBError
 from .plex import Plex, PlexError
@@ -30,6 +31,7 @@ sonarr = Sonarr(settings.sonarr_url, settings.sonarr_api_key,
                 language_profile=settings.sonarr_language_profile)
 plex = Plex(settings.plex_url, settings.plex_token)
 requests = Requests(settings.data_dir)
+admin = Admin(settings.data_dir, settings.admin_pin)
 STATIC = Path(__file__).parent / "static"
 
 
@@ -313,6 +315,140 @@ async def post_richiesta(body: NuovaRichiesta):
     requests.add(item, tvdb_id=arr_id if item["type"] == "tv" else None,
                  seasons=body.stagioni if item["type"] == "tv" else None)
     return {"stato": stato, "servizio": svc.name}
+
+
+# -------------------------------------------------------------- menu admin
+
+def _clients() -> dict:
+    return {"sonarr": sonarr, "radarr": radarr}
+
+
+def apply_admin_settings() -> None:
+    """Le scelte del menu admin prevalgono sulle variabili d'ambiente."""
+    for name, svc in _clients().items():
+        conf = admin.service(name)
+        svc.tags = list(conf["tag"])
+        svc.quality_profile = conf["profilo_qualita"] or svc.default_quality_profile
+        svc.root_folder = conf["cartella"] or svc.default_root_folder
+
+
+apply_admin_settings()
+
+
+def require_admin(x_admin_token: str | None = Header(None)) -> str:
+    if not admin.valid(x_admin_token):
+        raise HTTPException(401, "Sessione scaduta: inserisci di nuovo il PIN.")
+    return x_admin_token
+
+
+def _pin_error(e: PinError) -> HTTPException:
+    return HTTPException(e.status, str(e))
+
+
+class Pin(BaseModel):
+    pin: str
+
+
+class CambioPin(BaseModel):
+    attuale: str
+    nuovo: str
+
+
+@app.get("/api/admin")
+def get_admin(x_admin_token: str | None = Header(None)):
+    return {"pin_impostato": admin.pin_set, "pin_da_env": admin.pin_from_env, "sbloccato": admin.valid(x_admin_token)}
+
+
+@app.post("/api/admin/pin")
+def post_admin_pin(body: Pin):
+    """Primo utilizzo: sceglie il PIN."""
+    try:
+        return {"token": admin.create_pin(body.pin)}
+    except PinError as e:
+        raise _pin_error(e) from e
+
+
+@app.put("/api/admin/pin")
+def put_admin_pin(body: CambioPin, _: str = Depends(require_admin)):
+    try:
+        admin.change_pin(body.attuale, body.nuovo)
+    except PinError as e:
+        raise _pin_error(e) from e
+    return {"ok": True}
+
+
+@app.post("/api/admin/accesso")
+def post_admin_login(body: Pin):
+    try:
+        return {"token": admin.login(body.pin)}
+    except PinError as e:
+        raise _pin_error(e) from e
+
+
+@app.post("/api/admin/esci")
+def post_admin_logout(token: str = Depends(require_admin)):
+    admin.logout(token)
+    return {"ok": True}
+
+
+async def _service_settings(name: str) -> dict:
+    svc = _clients()[name]
+    out = {"configurato": svc.configured, "nome": svc.name, "valori": admin.service(name),
+           "predefiniti": {"profilo_qualita": svc.default_quality_profile, "cartella": svc.default_root_folder},
+           "opzioni": None, "errore": None}
+    if svc.configured:
+        try:
+            out["opzioni"] = await svc.options()
+        except ArrError as e:
+            out["errore"] = str(e)
+    return out
+
+
+@app.get("/api/admin/impostazioni")
+async def get_admin_settings(_: str = Depends(require_admin)):
+    sonarr_s, radarr_s = await asyncio.gather(_service_settings("sonarr"), _service_settings("radarr"))
+    return {"sonarr": sonarr_s, "radarr": radarr_s, "pin_da_env": admin.pin_from_env}
+
+
+class ServizioImpostazioni(BaseModel):
+    tag: list[int] | None = None
+    profilo_qualita: str | None = None
+    cartella: str | None = None
+
+
+class Impostazioni(BaseModel):
+    sonarr: ServizioImpostazioni | None = None
+    radarr: ServizioImpostazioni | None = None
+
+
+@app.put("/api/admin/impostazioni")
+def put_admin_settings(body: Impostazioni, _: str = Depends(require_admin)):
+    for name in SERVICES:
+        values = getattr(body, name)
+        if values is not None:
+            admin.update_service(name, values.model_dump(exclude_none=True))
+    apply_admin_settings()
+    return {name: admin.service(name) for name in SERVICES}
+
+
+class NuovoTag(BaseModel):
+    servizio: str
+    nome: str
+
+
+@app.post("/api/admin/tag")
+async def post_admin_tag(body: NuovoTag, _: str = Depends(require_admin)):
+    svc = _clients().get(body.servizio)
+    if not svc:
+        raise HTTPException(404, "Servizio sconosciuto.")
+    if not svc.configured:
+        raise HTTPException(400, f"{svc.name} non e' configurato.")
+    try:
+        return await svc.create_tag(body.nome)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except ArrError as e:
+        raise HTTPException(502, str(e)) from e
 
 
 @app.get("/health")

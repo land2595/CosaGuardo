@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 import httpx
@@ -46,6 +47,10 @@ class ArrClient:
         self.api_key = api_key
         self.quality_profile = quality_profile
         self.root_folder = root_folder
+        # Valori della configurazione (variabili d'ambiente), usati se il menu admin non ne sceglie altri
+        self.default_quality_profile = quality_profile
+        self.default_root_folder = root_folder
+        self.tags: list[int] = []  # id dei tag da applicare ai titoli aggiunti
 
     @property
     def configured(self) -> bool:
@@ -92,6 +97,43 @@ class ArrClient:
         )
         return {"qualityProfileId": profile["id"], "rootFolderPath": root["path"]}
 
+    async def tag_list(self) -> list[dict]:
+        return [{"id": t["id"], "nome": t.get("label", "")} for t in await self._req("GET", "/api/v3/tag") or []]
+
+    async def create_tag(self, label: str) -> dict:
+        """Crea un tag (o restituisce quello che esiste gia' con lo stesso nome)."""
+        # Sonarr e Radarr accettano solo lettere minuscole, numeri e trattini
+        label = re.sub(r"[^a-z0-9-]+", "-", label.strip().lower()).strip("-")
+        if not label:
+            raise ValueError("Scrivi un nome per il tag (lettere, numeri o trattini).")
+        for t in await self.tag_list():
+            if t["nome"].lower() == label:
+                return t
+        t = await self._req("POST", "/api/v3/tag", json={"label": label})
+        log.info("Creato il tag \"%s\" in %s", label, self.name)
+        return {"id": t["id"], "nome": t.get("label", label)}
+
+    async def _tags_to_apply(self) -> list[int]:
+        """I tag scelti nel menu admin che esistono ancora."""
+        if not self.tags:
+            return []
+        existing = {t["id"] for t in await self.tag_list()}
+        missing = set(self.tags) - existing
+        if missing:
+            log.warning("%s: tag %s non trovati, ignorati.", self.name, sorted(missing))
+        return [t for t in self.tags if t in existing]
+
+    async def options(self) -> dict:
+        """Profili di qualita', cartelle e tag disponibili, per il menu admin."""
+        profiles, roots, tags = await asyncio.gather(
+            self._req("GET", "/api/v3/qualityprofile"), self._req("GET", "/api/v3/rootfolder"), self.tag_list(),
+        )
+        return {
+            "profili_qualita": [{"id": p["id"], "nome": p.get("name", "")} for p in profiles or []],
+            "cartelle": [r["path"] for r in roots or [] if r.get("path")],
+            "tag": tags,
+        }
+
     async def queue(self) -> dict[int, dict]:
         """Download in corso, raggruppati per film/serie (id interno di Radarr/Sonarr)."""
         res = await self._req("GET", "/api/v3/queue", params={"pageSize": 1000})
@@ -137,6 +179,7 @@ class Radarr(ArrClient):
             raise ArrError("Radarr non trova questo film.")
         movie.update(await self._defaults())
         movie.update({
+            "tags": await self._tags_to_apply(),
             "monitored": True,
             "minimumAvailability": "released",
             "addOptions": {"searchForMovie": True},
@@ -221,6 +264,7 @@ class Sonarr(ArrClient):
             n = s.get("seasonNumber", 0)
             s["monitored"] = n > 0 and (seasons is None or n in seasons)
         series.update({
+            "tags": await self._tags_to_apply(),
             "monitored": True,
             "seasonFolder": True,
             # Senza "monitor" Sonarr rispetta le stagioni monitorate scelte qui sopra

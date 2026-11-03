@@ -55,6 +55,8 @@ class Settings:
     sonarr_quality_profile: str = field(default_factory=lambda: os.getenv("SONARR_QUALITY_PROFILE", "").strip())
     sonarr_root_folder: str = field(default_factory=lambda: os.getenv("SONARR_ROOT_FOLDER", "").strip())
     sonarr_language_profile: str = field(default_factory=lambda: os.getenv("SONARR_LANGUAGE_PROFILE", "").strip())
+    # PIN del menu admin: se vuoto si sceglie dalla pagina la prima volta
+    admin_pin: str = field(default_factory=lambda: os.getenv("ADMIN_PIN", "").strip())
     plex_url: str = field(default_factory=lambda: os.getenv("PLEX_URL", "").strip().rstrip("/"))
     plex_token: str = field(default_factory=lambda: os.getenv("PLEX_TOKEN", "").strip())
     enabled_platforms: list[str] = field(
