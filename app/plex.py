@@ -6,6 +6,8 @@ from urllib.parse import quote
 
 import httpx
 
+from .arr import describe_network_error
+
 log = logging.getLogger("plex")
 
 INDEX_TTL = 600  # secondi tra una lettura completa della libreria e l'altra
@@ -38,7 +40,8 @@ class Plex:
         try:
             r = await client.get(path, params=params)
         except httpx.HTTPError as e:
-            raise PlexError(f"Impossibile contattare Plex su {self.url}.") from e
+            log.warning("GET %s%s non raggiungibile: %r", self.url, path, e)
+            raise PlexError(f"Impossibile contattare Plex su {self.url}: {describe_network_error(e)}.") from e
         if r.status_code == 401:
             raise PlexError("Token di Plex non valido.")
         if r.status_code >= 400:

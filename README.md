@@ -101,6 +101,7 @@ Puoi configurarne anche uno solo. Nella scheda di un titolo compare il pulsante 
 - Usa l'indirizzo IP del computer o NAS, non `localhost`: dentro il container `localhost` è il container stesso. Se Radarr e Sonarr sono nella stessa rete Docker di CosaGuardo puoi usare il nome del container, ad esempio `http://radarr:7878`.
 - Se non indichi profilo di qualità e cartella, vengono usati i primi configurati in Radarr/Sonarr. Puoi sceglierli per nome con `RADARR_QUALITY_PROFILE=HD-1080p` e `RADARR_ROOT_FOLDER=/movies` (lo stesso per Sonarr).
 - Funziona con Radarr v3 o successivi e con Sonarr v3 e v4.
+- Se il menu admin dice **Non raggiungibile**, accanto c'è il motivo. *Connessione rifiutata*: porta sbagliata o servizio spento. *Nessuna risposta entro il tempo limite*: il container non riesce a raggiungere quell'indirizzo, di solito perché CosaGuardo gira sullo stesso NAS e il firewall blocca la rete Docker (consenti la sottorete `172.16.0.0/12`) oppure perché il container usa una rete `macvlan`. In questi casi metti CosaGuardo nella stessa rete Docker di Radarr e Sonarr e usa il nome del container, oppure avvialo con `--network host`. Prova da dentro il container con `docker exec cosaguardo python -c "import urllib.request;print(urllib.request.urlopen('http://IP:8989/ping').read())"`.
 
 ## Menu admin
 

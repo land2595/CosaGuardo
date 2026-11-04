@@ -23,6 +23,40 @@ class ArrError(RuntimeError):
     pass
 
 
+def describe_network_error(e: httpx.HTTPError) -> str:
+    """Spiega in italiano perche' un servizio in rete locale non risponde."""
+    if isinstance(e, httpx.ConnectTimeout):
+        return ("nessuna risposta entro il tempo limite: l'indirizzo non e' raggiungibile dal container "
+                "(firewall del NAS o rete Docker diversa)")
+    if isinstance(e, httpx.ConnectError):
+        # httpx riassume spesso con "All connection attempts failed": il motivo vero e' nella catena
+        chain, cur = [], e
+        while cur is not None and len(chain) < 8:
+            chain.append(cur)
+            chain.extend(getattr(cur, "exceptions", ()) or ())
+            cur = cur.__cause__ or cur.__context__
+        if any(isinstance(x, ConnectionRefusedError) for x in chain):
+            return "connessione rifiutata: controlla porta e che il servizio sia avviato"
+        if any(isinstance(x, TimeoutError) for x in chain):
+            return ("nessuna risposta entro il tempo limite: l'indirizzo non e' raggiungibile dal container "
+                    "(firewall del NAS o rete Docker diversa)")
+        text = " ".join(str(x) for x in chain).lower()
+        if "name or service" in text or "nodename" in text or "resolve" in text or "getaddrinfo" in text:
+            return "nome host non trovato"
+        if "refused" in text:
+            return "connessione rifiutata: controlla porta e che il servizio sia avviato"
+        if "unreachable" in text or "no route" in text:
+            return "rete non raggiungibile dal container"
+        return f"connessione non riuscita ({e or type(e).__name__})"
+    if isinstance(e, httpx.TimeoutException):
+        return "il servizio ha risposto troppo lentamente"
+    if isinstance(e, httpx.UnsupportedProtocol):
+        return "indirizzo non valido: deve iniziare con http:// o https://"
+    if isinstance(e, httpx.ProxyError):
+        return "errore del proxy (variabili HTTP_PROXY/HTTPS_PROXY nel container)"
+    return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+
+
 def _progress(records: list[dict]) -> dict:
     """Progresso complessivo di uno o piu' download in coda."""
     size = sum(r.get("size") or 0 for r in records)
@@ -57,7 +91,10 @@ class ArrClient:
         return bool(self.url and self.api_key)
 
     def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url=self.url, headers={"X-Api-Key": self.api_key}, timeout=20)
+        # Connessione rapida da stabilire, ma risposte lente tollerate: /rootfolder calcola lo spazio
+        # libero dei dischi e su un NAS puo' richiedere parecchi secondi.
+        return httpx.AsyncClient(base_url=self.url, headers={"X-Api-Key": self.api_key},
+                                 timeout=httpx.Timeout(60, connect=10))
 
     async def _req(self, method: str, path: str, **kw):
         if not self.configured:
@@ -66,7 +103,9 @@ class ArrClient:
             async with self._client() as client:
                 r = await client.request(method, path, **kw)
         except httpx.HTTPError as e:
-            raise ArrError(f"Impossibile contattare {self.name} su {self.url}.") from e
+            reason = describe_network_error(e)
+            log.warning("%s %s%s non raggiungibile: %r", method, self.url, path, e)
+            raise ArrError(f"Impossibile contattare {self.name} su {self.url}: {reason}.") from e
         if r.status_code == 401:
             raise ArrError(f"Chiave API di {self.name} non valida.")
         if r.status_code >= 400:

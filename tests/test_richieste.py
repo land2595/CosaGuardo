@@ -284,3 +284,12 @@ def test_admin_sonarr_tags_applied_to_new_series(services):
     # I film non prendono i tag di Sonarr
     services.post("/api/richieste", json={"id": "movie-1001"})
     assert mock_arr.radarr.state.movies[0]["tags"] == []
+
+
+def test_unreachable_service_explains_why():
+    # Porta chiusa in locale: la connessione viene rifiutata subito
+    sonarr = Sonarr("http://127.0.0.1:9", "test")
+    with pytest.raises(ArrError) as e:
+        asyncio.run(sonarr.tag_list())
+    assert "Impossibile contattare Sonarr su http://127.0.0.1:9:" in str(e.value)
+    assert "rifiutata" in str(e.value)
