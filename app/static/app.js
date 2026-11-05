@@ -1,6 +1,10 @@
+const VIEWS = ["novita", "prossimamente", "migliori", "tendenze", "bambini"];
+const savedView = localGet("view") === "da_non_perdere" ? "migliori" : localGet("view");
 const state = {
-  view: ["tendenze", "prossimamente", "da_non_perdere"].includes(localGet("view")) ? localGet("view") : "novita",
+  view: VIEWS.includes(savedView) ? savedView : "novita",
   tipo: "all",
+  categoria: "",
+  periodo: localGet("periodo") || "n5",
   q: "",
   platforms: new Set(JSON.parse(localGet("platforms") || "[]")),
   data: null,
@@ -68,12 +72,38 @@ function badgeHtml(key) {
   return `<span class="badge" style="--c:${esc(p.color)}">${logo}${esc(p.name)}</span>`;
 }
 
-function filtered(view = state.view) {
+// ------------------------------------------------------------ periodo ("I migliori")
+
+const THIS_YEAR = new Date().getFullYear();
+
+function periodOptions() {
+  const max = state.data?.anni_migliori || 10;
+  const years = Array.from({ length: Math.min(5, max) }, (_, k) => THIS_YEAR - k)
+    .map((y) => ({ id: `y${y}`, label: String(y) }));
+  const spans = [3, 5, 10].filter((n) => n <= max).map((n) => ({ id: `n${n}`, label: `Ultimi ${n} anni` }));
+  return [...years, ...spans];
+}
+
+function inPeriod(i, periodo = state.periodo) {
+  const y = Number(i.year);
+  if (!y) return false;
+  if (periodo.startsWith("y")) return y === Number(periodo.slice(1));
+  return y > THIS_YEAR - Number(periodo.slice(1));
+}
+
+function periodTitle() {
+  const p = state.periodo;
+  return p.startsWith("y") ? `I migliori del ${p.slice(1)}` : `I migliori degli ultimi ${p.slice(1)} anni`;
+}
+
+function filtered(view = state.view, skip = "") {
   const items = state.data?.[view] || [];
   const q = state.q.toLowerCase();
   return items.filter((i) =>
     (state.tipo === "all" || i.type === state.tipo) &&
-    (!state.platforms.size || i.platforms.some((p) => state.platforms.has(p))) &&
+    (skip === "platforms" || !state.platforms.size || i.platforms.some((p) => state.platforms.has(p))) &&
+    (skip === "categoria" || !state.categoria || (i.categorie || []).includes(state.categoria)) &&
+    (view !== "migliori" || inPeriod(i)) &&
     (!q || (i.title || "").toLowerCase().includes(q) || (i.original_title || "").toLowerCase().includes(q))
   );
 }
@@ -108,9 +138,10 @@ function cardHtml(i, n = 0) {
   const meta = state.view === "novita" ? `<b>${esc(relDate(i.date))}</b>${genre}`
     : upcoming ? `<b>${esc(untilText(i.date))}</b>${genre}`
     : `${esc(i.year)}${genre}`;
+  const best = state.view === "migliori";
   const corner = [
     upcoming && i.date ? calHtml(i.date) : "",
-    state.view === "da_non_perdere" && i.rating ? `<span class="medal" title="Voto ${esc(i.score?.fonte || "TMDB")} su ${(i.votes || 0).toLocaleString("it-IT")} voti"><i>${esc(i.score?.fonte || "★")}</i><b>${i.rating.toFixed(1)}</b></span>` : "",
+    best ? scoreHtml(i) : "",
     onPlex(i) ? `<span class="on-plex">Su Plex</span>` : "",
   ].join("");
   let posterBox = `
@@ -119,7 +150,7 @@ function cardHtml(i, n = 0) {
       <span class="pill ${fresh ? "new" : upcoming ? "soon" : ""}">${esc(pill)}</span>
       ${corner ? `<div class="corner">${corner}</div>` : ""}
       <div class="logos">${i.platforms.map(logoHtml).join("")}</div>
-      ${i.rating && state.view !== "da_non_perdere" && !upcoming ? `<span class="rating">★ ${i.rating}</span>` : ""}
+      ${i.rating && !best && !upcoming ? `<span class="rating">★ ${i.rating}</span>` : ""}
       ${i.overview ? `<div class="hover-info"><p>${esc(i.overview)}</p><span class="go">▶ Dettagli</span></div>` : ""}
       <span class="glare"></span>
     </div>`;
@@ -132,6 +163,16 @@ function cardHtml(i, n = 0) {
     ${i.type === "tv" ? `<span class="sub">${esc(i.badge)}</span>` : ""}
     <span class="meta">${meta}</span>
   </button>`;
+}
+
+// Voto mostrato in "I migliori": Tomatometer se c'e', altrimenti IMDb (o TMDB)
+function scoreHtml(i) {
+  if (i.rt) {
+    const fresh = i.rt.voto >= 60;
+    return `<span class="medal rt ${fresh ? "" : "rotten"}" title="Rotten Tomatoes: ${i.rt.voto}% delle recensioni della critica sono positive"><i>${fresh ? "🍅" : "🤢"}</i><b>${i.rt.voto}%</b></span>`;
+  }
+  if (!i.rating) return "";
+  return `<span class="medal" title="Voto ${esc(i.score?.fonte || "TMDB")} su ${(i.votes || 0).toLocaleString("it-IT")} voti"><i>${esc(i.score?.fonte || "★")}</i><b>${i.rating.toFixed(1)}</b></span>`;
 }
 
 function blockHtml(title, items, ranked = false) {
@@ -155,8 +196,19 @@ function render() {
     content.innerHTML = items.length ? blockHtml("I più visti questa settimana", items, true) : "";
     return;
   }
-  if (state.view === "da_non_perdere") {
-    content.innerHTML = items.length ? blockHtml("I più apprezzati del momento", items) : "";
+  if (state.view === "migliori") {
+    const note = state.data && !state.data.rotten_tomatoes
+      ? `<p class="note">Per ordinare la classifica con i voti di <b>Rotten Tomatoes</b> serve una chiave OMDb gratuita: inseriscila nel menu impostazioni (l'ingranaggio in alto). Intanto la classifica usa i voti IMDb.</p>`
+      : "";
+    content.innerHTML = items.length ? note + blockHtml(periodTitle(), items.slice(0, 100)) : note;
+    $("#empty").hidden = items.length > 0 || !state.data;
+    return;
+  }
+  if (state.view === "bambini") {
+    const movies = items.filter((i) => i.type === "movie");
+    const shows = items.filter((i) => i.type === "tv");
+    content.innerHTML = (movies.length ? blockHtml("Film per bambini", movies) : "") +
+      (shows.length ? blockHtml("Serie per bambini", shows) : "");
     return;
   }
   if (state.view === "prossimamente") {
@@ -177,11 +229,8 @@ function render() {
 }
 
 function platformCounts() {
-  // Quanti titoli ha ogni piattaforma con i filtri attuali (tipo e ricerca)
-  const saved = state.platforms;
-  state.platforms = new Set();
-  const items = filtered();
-  state.platforms = saved;
+  // Quanti titoli ha ogni piattaforma con gli altri filtri attuali
+  const items = filtered(state.view, "platforms");
   const counts = { all: items.length };
   for (const i of items) for (const p of i.platforms) counts[p] = (counts[p] || 0) + 1;
   return counts;
@@ -204,6 +253,34 @@ function renderChips() {
     Object.entries(ps).map(([k, p]) => chipHtml(
       k, p.name, p.logo ? `<img src="${esc(p.logo)}" alt="">` : "", p.color, counts[k] || 0, state.platforms.has(k),
     )).join("");
+}
+
+function renderGenres() {
+  // Solo le categorie che hanno titoli con gli altri filtri attuali (e quella scelta)
+  const items = filtered(state.view, "categoria");
+  const counts = {};
+  for (const i of items) for (const c of i.categorie || []) counts[c] = (counts[c] || 0) + 1;
+  const cats = (state.data?.categorie || []).filter((c) => counts[c.id] || c.id === state.categoria);
+  $("#genres").hidden = !cats.length;
+  $("#genres").innerHTML =
+    `<button class="genre ${state.categoria ? "" : "on"}" data-c="" aria-pressed="${!state.categoria}">Tutti i generi</button>` +
+    cats.map((c) => `<button class="genre ${c.id === state.categoria ? "on" : ""}" data-c="${esc(c.id)}" aria-pressed="${c.id === state.categoria}">${esc(c.nome)}<small>${counts[c.id] || 0}</small></button>`).join("");
+}
+
+function renderPeriods() {
+  const el = $("#periods");
+  el.hidden = state.view !== "migliori";
+  if (el.hidden) return;
+  const opts = periodOptions();
+  if (!opts.some((o) => o.id === state.periodo)) state.periodo = "n5";
+  el.innerHTML = `<span class="periods-label">Periodo</span>` + opts.map((o) =>
+    `<button class="period ${o.id === state.periodo ? "on" : ""} ${o.id.startsWith("n") ? "span" : ""}" data-p="${o.id}" aria-pressed="${o.id === state.periodo}">${esc(o.label)}</button>`).join("");
+}
+
+function renderFilters() {
+  renderPeriods();
+  renderGenres();
+  renderChips();
 }
 
 function renderStatus(s) {
@@ -269,7 +346,8 @@ function showHero(n, instant = false) {
     $("#hero-eyebrow").textContent = {
       tendenze: `N° ${i.rank} di tendenza in Italia`,
       prossimamente: `${i.type === "movie" ? "Film" : i.badge} · dal ${fmtLong.format(toDate(i.date))}${where ? ` su ${where}` : ""}`,
-      da_non_perdere: `${i.score?.fonte || "★"} ${i.rating?.toFixed(1)} · Da non perdere`,
+      migliori: `${i.rt ? `🍅 ${i.rt.voto}% Rotten Tomatoes` : `${i.score?.fonte || "★"} ${i.rating?.toFixed(1)}`} · ${periodTitle()}`,
+      bambini: `${i.type === "movie" ? "Film" : "Serie"} per bambini`,
     }[state.view] || `${i.type === "movie" ? "Film" : i.badge} · ${relDate(i.date)}`;
     $("#hero-title").textContent = i.title;
     $("#hero-meta").textContent = [i.year, i.genres.slice(0, 3).join(", "), i.rating ? `★ ${i.rating}` : ""].filter(Boolean).join("  ·  ");
@@ -297,7 +375,7 @@ async function load() {
     return;
   }
   renderStatus(state.data);
-  renderChips();
+  renderFilters();
   renderHero();
   render();
   if (state.data.aggiornamento_in_corso || (!state.data.aggiornato && !state.data.errore)) {
@@ -315,9 +393,9 @@ async function poll() {
 }
 
 function findItem(id) {
-  // Prima la sezione aperta (es. in "Da non perdere" l'elemento ha il voto IMDb), poi le altre
+  // Prima la sezione aperta (es. in "I migliori" l'elemento ha il voto IMDb), poi le altre
   const d = state.data || {};
-  const lists = [d[state.view], d.novita, d.tendenze, d.prossimamente, d.da_non_perdere, state.requests];
+  const lists = [d[state.view], d.novita, d.tendenze, d.prossimamente, d.migliori, d.bambini, state.requests];
   for (const list of lists) {
     const found = (list || []).find((x) => x.id === id);
     if (found) return found;
@@ -665,14 +743,18 @@ async function renderRequests(silent = false) {
   }
   if (state.view !== "richieste") return;
   $("#empty").hidden = true;
-  const list = state.requests;
+  const q = state.q.toLowerCase();
+  const list = state.requests.filter((r) => (state.tipo === "all" || r.type === state.tipo) &&
+    (!q || (r.title || "").toLowerCase().includes(q)));
   const active = list.filter((r) => r.download).length;
   content.innerHTML = list.length
     ? `<section class="block">
         <div class="block-head"><h2>Le mie richieste</h2><span class="count">${list.length} ${list.length === 1 ? "titolo" : "titoli"}${active ? ` · ${active} in download` : ""}</span></div>
         <div class="grid">${list.map(requestCardHtml).join("")}</div>
       </section>`
-    : `<div class="req-empty"><h3>Nessuna richiesta, per ora</h3><p>Apri un titolo e premi “Richiedi”: i film vanno a Radarr, le serie a Sonarr.</p></div>`;
+    : state.requests.length
+      ? `<div class="req-empty"><h3>Nessuna richiesta con questi filtri</h3><p>Prova a scegliere “Tutti” o a cambiare la ricerca.</p></div>`
+      : `<div class="req-empty"><h3>Nessuna richiesta, per ora</h3><p>Apri un titolo e premi “Richiedi”: i film vanno a Radarr, le serie a Sonarr.</p></div>`;
   if (silent) content.querySelectorAll(".card").forEach((c) => { c.style.animation = "none"; });
   // Con download in corso aggiorna i progressi ogni 15 secondi
   clearTimeout(requestsTimer);
@@ -903,11 +985,63 @@ function renderAdmin() {
   $("#a-pinchange").hidden = c.pin_da_env;
 }
 
+function omdbHtml(o) {
+  const pill = !o.configurata ? "Non collegato" : o.errore ? "Errore" : "Collegato";
+  const where = o.da_env ? `La chiave arriva da <code>OMDB_API_KEY</code>; se ne inserisci una qui, vale questa.` : "";
+  return `<div class="a-sec-head"><h3>Rotten Tomatoes</h3><span class="a-pill ${o.configurata && !o.errore ? "on" : ""}">${pill}</span></div>
+    <p class="a-note">Serve per ordinare “I migliori” con il voto della critica di Rotten Tomatoes. I voti arrivano da OMDb:
+      chiedi una chiave gratuita su <a href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noopener">omdbapi.com</a>
+      (piano FREE, 1.000 richieste al giorno) e attivala dal link nella mail. ${where}</p>
+    ${o.errore ? `<p class="a-note err">OMDb: ${esc(o.errore)}</p>` : ""}
+    ${o.configurata ? `<p class="a-note">Chiave attuale: <code>${esc(o.chiave)}</code> · richieste usate oggi: ${o.usate_oggi} su ${o.limite}</p>` : ""}
+    <form class="a-newtag" id="a-omdb-form">
+      <input type="text" id="a-omdb-key" placeholder="${o.configurata ? "Nuova chiave OMDb" : "Chiave OMDb"}" aria-label="Chiave OMDb" maxlength="40" autocomplete="off" spellcheck="false">
+      <button type="submit" class="a-link">Salva chiave</button>
+      ${o.configurata && !o.da_env ? `<button type="button" class="a-link" id="a-omdb-remove">Rimuovi</button>` : ""}
+    </form>
+    <p class="a-msg" id="a-omdb-msg" role="status"></p>`;
+}
+
+async function loadOmdb() {
+  try {
+    $("#a-omdb").innerHTML = omdbHtml(await adminFetch("/api/admin/omdb"));
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    $("#a-omdb").innerHTML = `<p class="a-note err">${esc(err.message)}</p>`;
+  }
+}
+
+async function saveOmdb(chiave) {
+  adminMsg("#a-omdb-msg", chiave ? "Verifico la chiave…" : "");
+  try {
+    const o = await adminFetch("/api/admin/omdb", { method: "PUT", body: JSON.stringify({ chiave }) });
+    $("#a-omdb").innerHTML = omdbHtml(o);
+    adminMsg("#a-omdb-msg", chiave
+      ? "Chiave salvata. Sto ricalcolando “I migliori” con i voti di Rotten Tomatoes: ci vuole qualche minuto."
+      : "Chiave rimossa.", false);
+    if (state.data) state.data.rotten_tomatoes = o.configurata;
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    adminMsg("#a-omdb-msg", err.message, true);
+  }
+}
+
+$("#a-omdb").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const key = $("#a-omdb-key").value.trim();
+  if (!key) return $("#a-omdb-key").focus();
+  saveOmdb(key);
+});
+$("#a-omdb").addEventListener("click", (e) => {
+  if (e.target.id === "a-omdb-remove") saveOmdb("");
+});
+
 async function showPanel() {
   $("#a-lock").hidden = true;
   $("#a-panel").hidden = false;
   $("#a-services").innerHTML = `<p class="a-note">Leggo le impostazioni di Sonarr e Radarr…</p>`;
   adminMsg("#a-save-msg", "");
+  loadOmdb();
   try {
     admin.conf = await adminFetch("/api/admin/impostazioni");
   } catch (err) {
@@ -1016,7 +1150,7 @@ function setView(view) {
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
   if (t.dataset.view === "richieste") state.requestsLoaded = false;
   setView(t.dataset.view);
-  renderChips();
+  renderFilters();
   renderHero();
   render();
 }));
@@ -1026,12 +1160,32 @@ $("#tipo").addEventListener("click", (e) => {
   if (!b) return;
   state.tipo = b.dataset.tipo;
   $("#tipo").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
+  renderFilters();
+  renderHero();
+  render();
+});
+
+$("#search").addEventListener("input", (e) => { state.q = e.target.value.trim(); renderGenres(); renderChips(); render(); });
+
+$("#genres").addEventListener("click", (e) => {
+  const b = e.target.closest(".genre");
+  if (!b) return;
+  state.categoria = b.dataset.c === state.categoria ? "" : b.dataset.c;
+  renderGenres();
   renderChips();
   renderHero();
   render();
 });
 
-$("#search").addEventListener("input", (e) => { state.q = e.target.value.trim(); renderChips(); render(); });
+$("#periods").addEventListener("click", (e) => {
+  const b = e.target.closest(".period");
+  if (!b) return;
+  state.periodo = b.dataset.p;
+  localSet("periodo", state.periodo);
+  renderFilters();
+  renderHero();
+  render();
+});
 
 $("#platforms").addEventListener("click", (e) => {
   const b = e.target.closest(".chip");
@@ -1040,6 +1194,7 @@ $("#platforms").addEventListener("click", (e) => {
   if (k === "all") state.platforms.clear();
   else state.platforms.has(k) ? state.platforms.delete(k) : state.platforms.add(k);
   localSet("platforms", JSON.stringify([...state.platforms]));
+  renderGenres();
   renderChips();
   renderHero();
   render();

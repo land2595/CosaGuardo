@@ -12,6 +12,9 @@ services:
       MOVIE_DAYS: ${MOVIE_DAYS:-90}
       TV_DAYS: ${TV_DAYS:-30}
       UPCOMING_DAYS: ${UPCOMING_DAYS:-60}
+      # Facoltativa: voti Rotten Tomatoes in "I migliori" (si puo' inserire anche dal menu admin)
+      OMDB_API_KEY: ${OMDB_API_KEY:-}
+      BEST_YEARS: ${BEST_YEARS:-10}
       PLATFORMS: ${PLATFORMS:-netflix,prime,disney,paramount,sky,apple,timvision,raiplay,mediaset,discovery}
       # Facoltativi: richieste dei film a Radarr e delle serie a Sonarr
       RADARR_URL: ${RADARR_URL:-}

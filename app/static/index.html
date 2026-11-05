@@ -21,8 +21,9 @@
     <nav class="tabs" role="tablist" aria-label="Sezioni">
       <button role="tab" class="tab" data-view="novita">Ultime uscite</button>
       <button role="tab" class="tab" data-view="prossimamente">Prossimamente</button>
-      <button role="tab" class="tab" data-view="da_non_perdere">Da non perdere</button>
+      <button role="tab" class="tab" data-view="migliori">I migliori</button>
       <button role="tab" class="tab" data-view="tendenze">Di tendenza in Italia</button>
+      <button role="tab" class="tab" data-view="bambini">Bambini</button>
       <button role="tab" class="tab" data-view="richieste" hidden>Le mie richieste</button>
     </nav>
     <div class="status" id="status" aria-live="polite"></div>
@@ -74,6 +75,8 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 0 3.9 10.6l4.8 4.8 1.4-1.4-4.8-4.8A6 6 0 0 0 10 4zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8z"/></svg>
       <input type="search" id="search" placeholder="Cerca un titolo" aria-label="Cerca un titolo">
     </label>
+    <div class="periods" id="periods" aria-label="Periodo" hidden></div>
+    <div class="genres" id="genres" aria-label="Categorie"></div>
     <div class="chips" id="platforms" aria-label="Piattaforme"></div>
   </section>
 
@@ -156,6 +159,7 @@
         <button class="btn-gold" id="a-save" type="button">Salva impostazioni</button>
         <p class="a-msg" id="a-save-msg" role="status"></p>
       </div>
+      <section class="a-section" id="a-omdb"></section>
       <details class="a-section a-pinchange" id="a-pinchange">
         <summary>Cambia il PIN</summary>
         <form id="a-pin-form">

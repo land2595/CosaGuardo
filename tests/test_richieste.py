@@ -156,7 +156,7 @@ def test_plex(services):
     assert services.get("/api/richieste/movie-1002").json()["plex"]["titolo"] == "La notte di Roma"
 
 
-def test_prossimamente_and_da_non_perdere(services):
+def test_prossimamente(services):
     d = services.get("/api/catalogo").json()
     upcoming = {i["id"]: i for i in d["prossimamente"]}
     assert set(upcoming) == {"movie-1101", "movie-1102", "movie-1103", "movie-1104", "tv-2101", "tv-2102", "tv-2104"}
@@ -166,22 +166,48 @@ def test_prossimamente_and_da_non_perdere(services):
     assert dates == sorted(dates)
 
 
-def test_da_non_perdere_reliable(services, tmp_path):
-    must = {i["id"]: i for i in services.get("/api/catalogo").json()["da_non_perdere"]}
-    assert must
-    for it in must.values():
+def test_migliori_without_omdb(services, tmp_path):
+    d = services.get("/api/catalogo").json()
+    assert "da_non_perdere" not in d and d["rotten_tomatoes"] is False
+    best = {i["id"]: i for i in d["migliori"]}
+    assert best
+    for it in best.values():
         assert it["score"]["fonte"] == "IMDb" and it["rating"] == it["score"]["voto"] >= 7
-        assert it["votes"] >= (3000 if it["type"] == "movie" else 1000)
+        assert it["votes"] >= (5000 if it["type"] == "movie" else 2000)
         assert it["score"]["url"].startswith("https://www.imdb.com/title/tt")
-        assert it["platforms"]
-    assert "movie-1003" not in must  # voto alto ma pochi voti su IMDb
-    assert "movie-1007" not in must  # senza scheda in italiano
-    assert "tv-2105" not in must     # stagione iniziata piu' di 6 mesi fa
-    assert "tv-2106" not in must     # reality
+        assert it["platforms"] and it["year"] and "rt" not in it
+    assert "movie-1003" not in best  # voto alto ma pochi voti su IMDb
+    assert "movie-1007" not in best  # senza scheda in italiano
+    assert "tv-2106" not in best     # reality
+    assert "movie-1101" not in best  # non ancora uscito
     assert (tmp_path / "imdb-ratings.tsv.gz").exists()
 
 
-def test_da_non_perdere_without_imdb(tmp_path):
+def test_migliori_rotten_tomatoes(tmp_path):
+    s = Settings()
+    s.tmdb_api_key = "test"
+    s.data_dir = str(tmp_path)
+    s.omdb_api_key = "omdb-test"
+    cat = Catalog(s)
+    cat._client = _mock_client(mock_tmdb.app)
+    asyncio.run(cat.refresh())
+    best = cat.data["migliori"]
+    with_rt = [i for i in best if "rt" in i]
+    assert with_rt and all(i["type"] == "movie" and i["rt"]["voto"] >= 70 for i in with_rt)
+    assert "movie-1005" not in {i["id"] for i in best}  # Tomatometer 55%: escluso
+    # Ordine per Tomatometer (senza Tomatometer conta la media IMDb pesata, in centesimi)
+    rts = [i["rt"]["voto"] for i in with_rt]
+    assert rts == sorted(rts, reverse=True) and best[0]["rt"]["voto"] == 100
+    assert any(i["type"] == "tv" and "rt" not in i for i in best)  # le serie restano, con il voto IMDb
+    # I voti sono salvati: un secondo aggiornamento non chiede niente a OMDb
+    used = cat.rt.used_today
+    assert used > 0 and (tmp_path / "rotten-tomatoes.json").exists()
+    cat.force_best()
+    asyncio.run(cat.refresh())
+    assert cat.rt.used_today == used
+
+
+def test_migliori_without_imdb(tmp_path):
     from app.imdb import ImdbRatings
     s = Settings()
     s.tmdb_api_key = "test"
@@ -190,9 +216,28 @@ def test_da_non_perdere_without_imdb(tmp_path):
     cat = Catalog(s)
     cat._client = _mock_client(mock_tmdb.app)
     asyncio.run(cat.refresh())
-    must = cat.data["da_non_perdere"]
-    assert must and all(i["score"]["fonte"] == "TMDB" and i["rating"] >= 7 for i in must)
+    best = cat.data["migliori"]
+    assert best and all(i["score"]["fonte"] == "TMDB" and i["rating"] >= 7 for i in best)
     assert isinstance(cat.imdb, ImdbRatings) and not (tmp_path / "imdb-ratings.tsv.gz").exists()
+
+
+def test_bambini(services):
+    kids = {i["id"]: i for i in services.get("/api/catalogo").json()["bambini"]}
+    assert {"movie-1004", "movie-1010", "tv-2007"} <= set(kids)
+    assert "movie-1012" not in kids  # animazione PG-13
+    assert "tv-2009" not in kids     # animazione TV-MA
+    assert "movie-1001" not in kids  # vietato ai minori (R)
+    assert "famiglia" in kids["movie-1004"]["categorie"]
+    pop = [i["popularity"] for i in kids.values()]
+    assert pop == sorted(pop, reverse=True)
+
+
+def test_categorie_filter(services):
+    d = services.get("/api/catalogo").json()
+    assert {"id": "commedia", "nome": "Commedia"} in d["categorie"]
+    comedies = services.get("/api/catalogo", params={"categoria": "commedia", "tipo": "movie"}).json()["novita"]
+    assert comedies and all("commedia" in i["categorie"] and i["type"] == "movie" for i in comedies)
+    assert len(comedies) < len(d["novita"])
 
 
 def test_series_status_and_plex_seasons(services):
@@ -293,3 +338,18 @@ def test_unreachable_service_explains_why():
         asyncio.run(sonarr.tag_list())
     assert "Impossibile contattare Sonarr su http://127.0.0.1:9:" in str(e.value)
     assert "rifiutata" in str(e.value)
+
+
+def test_admin_omdb_key(services, monkeypatch):
+    h = _login(services)
+    assert services.get("/api/admin/omdb").status_code == 401
+    st = services.get("/api/admin/omdb", headers=h).json()
+    assert st["configurata"] is False
+    r = services.put("/api/admin/omdb", json={"chiave": "sbagliata1"}, headers=h)
+    assert r.status_code == 400 and "non valida" in r.json()["detail"]
+    st = services.put("/api/admin/omdb", json={"chiave": "abcd1234"}, headers=h).json()
+    assert st["configurata"] and st["chiave"] == "ab••••34"
+    assert main.catalog.rt.api_key == "abcd1234" and main.admin.data["omdb_chiave"] == "abcd1234"
+    assert services.get("/api/catalogo").json()["rotten_tomatoes"] is True
+    services.put("/api/admin/omdb", json={"chiave": ""}, headers=h)
+    assert main.catalog.rt.api_key == ""
