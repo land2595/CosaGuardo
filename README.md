@@ -9,8 +9,9 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 - **Sempre aggiornato**: il catalogo si aggiorna da solo ogni ora (configurabile), e la pagina si ricarica quando ci sono novità.
 - **Di tendenza in Italia**: la classifica dei titoli più visti della settimana disponibili sulle piattaforme italiane.
 - **Prossimamente**: i film e le serie in arrivo sulle piattaforme italiane nei prossimi 60 giorni, con la data di uscita e un calendario per settimana e per mese.
-- **Da non perdere**: i film e le serie più votati usciti negli ultimi 6 mesi, già disponibili in Italia e con la scheda in italiano. Il voto è quello di **IMDb**, più affidabile perché dato da molte più persone.
-- Filtri per film o serie e per piattaforma, ricerca per titolo, schede con trama, voto e link "dove guardarlo".
+- **I migliori**: la classifica dei film e delle serie migliori di un anno (es. il 2024) o degli ultimi 3, 5 o 10 anni, già disponibili in Italia e con la scheda in italiano, **ordinati per voto di Rotten Tomatoes** (con una chiave gratuita OMDb; senza, si usa il voto IMDb).
+- **Bambini**: i film e le serie più popolari adatti ai bambini fino a 12 anni.
+- Filtri per film o serie, per **categoria** (commedia, avventura, azione, animazione...) e per piattaforma in tutte le sezioni, ricerca per titolo, schede con trama, voto e link "dove guardarlo".
 - Le serie hanno un'etichetta che dice cosa c'è di nuovo: *Nuova serie*, *Nuova stagione* o *Nuovi episodi*.
 - **Trailer** nella scheda di ogni titolo, in italiano quando c'è.
 - **Richieste**: un pulsante "Richiedi" manda i film a **Radarr** e le serie a **Sonarr**, che li cercano e li scaricano. Per le serie scegli se richiedere tutte le stagioni o solo alcune. La sezione *Le mie richieste* mostra lo stato di ognuna, il progresso del download con il tempo rimanente e gli episodi scaricati per stagione.
@@ -22,9 +23,11 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 
 ![Locandine animate e filtro per piattaforma](docs/piattaforme.png)
 
-| Prossimamente | Da non perdere |
+| Prossimamente | I migliori |
 |---|---|
-| ![Prossimamente](docs/prossimamente.png) | ![Da non perdere](docs/da-non-perdere.png) |
+| ![Prossimamente](docs/prossimamente.png) | ![I migliori](docs/migliori.png) |
+
+![Bambini](docs/bambini.png)
 
 | Di tendenza in Italia | Scheda del titolo | Mobile |
 |---|---|---|
@@ -147,7 +150,11 @@ Tutte le opzioni sono variabili d'ambiente (`-e NOME=valore` con `docker run`, o
 | `SONARR_LANGUAGE_PROFILE` | il primo | Solo Sonarr v3: profilo lingua (nome o id). |
 | `ADMIN_PIN` | | PIN del menu admin (4-8 cifre). Se vuoto si sceglie dalla pagina. |
 | `PLEX_URL` / `PLEX_TOKEN` | | Indirizzo del server Plex e token, per vedere cosa hai già. |
-| `IMDB_RATINGS` | `1` | Usa i voti IMDb in *Da non perdere*. Con `0` usa solo quelli di TMDB e non scarica niente. |
+| `OMDB_API_KEY` | | Chiave [OMDb](https://www.omdbapi.com/apikey.aspx) (gratuita) per i voti di Rotten Tomatoes in *I migliori*. Si può inserire anche dal menu admin. |
+| `OMDB_DAILY_LIMIT` | `900` | Richieste a OMDb al giorno al massimo (il piano gratuito ne permette 1.000). |
+| `BEST_YEARS` | `10` | Quanti anni indietro guarda *I migliori*. |
+| `BEST_HOURS` | `24` | Ogni quante ore ricalcolare *I migliori*. |
+| `IMDB_RATINGS` | `1` | Usa i voti IMDb in *I migliori*. Con `0` usa solo quelli di TMDB e non scarica niente. |
 | `UPCOMING_DAYS` | `60` | Quanti giorni avanti guarda la sezione *Prossimamente*. |
 | `PUID` / `PGID` | `1000` / `1000` | Utente e gruppo con cui gira l'app e a cui appartengono i file in `/data`. Utile se monti una cartella del NAS (es. `-v /percorso/cosaguardo:/data`). |
 
@@ -163,7 +170,11 @@ Ad ogni aggiornamento, CosaGuardo:
 4. per ogni titolo legge la scheda in italiano e le piattaforme italiane su cui è disponibile, poi unisce i doppioni;
 5. ordina tutto dalla data di uscita più recente e salva il risultato in `/data/catalogo.json`, così al riavvio la pagina è subito pronta.
 
-Per **Prossimamente** cerca i film con uscita digitale o TV in Italia nelle prossime settimane e le serie (nuove o con una nuova stagione) che debuttano sulle reti delle piattaforme. **Da non perdere** prende i film e le serie (nuove o con una stagione nuova) usciti negli ultimi 6 mesi, disponibili in abbonamento o gratis su una piattaforma italiana e con la trama tradotta in italiano. Esclude reality, talk show, notiziari, soap e programmi per bambini. Il voto viene dal [dataset ufficiale di IMDb](https://developer.imdb.com/non-commercial-datasets/), scaricato una volta al giorno in `/data` (circa 8 MB): servono almeno 3.000 voti per un film e 1.000 per una serie, e il voto minimo è 7. La classifica usa la media pesata di IMDb, così un titolo con pochi voti non scavalca uno votato da decine di migliaia di persone. Se IMDb non è raggiungibile, o un titolo non c'è ancora, si usa il voto di TMDB.
+Per **Prossimamente** cerca i film con uscita digitale o TV in Italia nelle prossime settimane e le serie (nuove o con una nuova stagione) che debuttano sulle reti delle piattaforme. **I migliori** prende, anno per anno, i film e le serie più votati e più visti, disponibili in abbonamento o gratis su una piattaforma italiana e con la trama tradotta in italiano (l'anno di una serie è quello del debutto). Esclude reality, talk show, notiziari, soap e programmi per bambini. Servono almeno 5.000 voti su IMDb per un film e 2.000 per una serie, con voto minimo 7 (dal [dataset ufficiale di IMDb](https://developer.imdb.com/non-commercial-datasets/), scaricato una volta al giorno in `/data`). La classifica segue il **Tomatometer di Rotten Tomatoes** (la percentuale di recensioni positive della critica), letto da [OMDb](https://www.omdbapi.com) e salvato in `/data/rotten-tomatoes.json` per non consumare la quota giornaliera; i titoli sotto il 70% sono esclusi. OMDb ha il Tomatometer per quasi tutti i film ma solo per poche serie: i titoli senza Tomatometer usano la media pesata di IMDb in centesimi (8,5 vale come 85%) e nella scheda mostrano il voto IMDb.
+
+**Bambini** prende i film di genere famiglia o animazione con classificazione USA G o PG e le serie per bambini, famiglia o animazione con classificazione da TV-Y a TV-PG, ordinati per popolarità. Esclude horror, thriller, crime e guerra.
+
+Le **categorie** dei filtri raggruppano i generi di TMDB; per le serie TMDB unisce alcuni generi (es. "Action & Adventure"), quindi una serie d'azione compare sia in *Azione* sia in *Avventura*.
 
 I dati di disponibilità arrivano da [JustWatch](https://www.justwatch.com/it) tramite le API di [TMDB](https://www.themoviedb.org).
 

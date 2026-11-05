@@ -142,6 +142,10 @@ class Admin:
         self._save()
         return current
 
+    def set_value(self, key: str, value) -> None:
+        self.data[key] = value
+        self._save()
+
     def _save(self) -> None:
         try:
             os.makedirs(os.path.dirname(self.file), exist_ok=True)

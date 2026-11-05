@@ -40,7 +40,13 @@ class Settings:
     pages: int = field(default_factory=lambda: _int("PAGES", 5))
     # Giorni in avanti mostrati in "Prossimamente"
     upcoming_days: int = field(default_factory=lambda: _int("UPCOMING_DAYS", 60))
-    # Voti IMDb per "Da non perdere" (dataset pubblico, scaricato una volta al giorno)
+    # "I migliori": quanti anni indietro guardare e ogni quante ore ricalcolare la classifica
+    best_years: int = field(default_factory=lambda: _int("BEST_YEARS", 10))
+    best_hours: int = field(default_factory=lambda: _int("BEST_HOURS", 24))
+    # Voti Rotten Tomatoes via OMDb (chiave gratuita su omdbapi.com, 1000 richieste al giorno)
+    omdb_api_key: str = field(default_factory=lambda: os.getenv("OMDB_API_KEY", "").strip())
+    omdb_daily_limit: int = field(default_factory=lambda: _int("OMDB_DAILY_LIMIT", 900))
+    # Voti IMDb per "I migliori" (dataset pubblico, scaricato una volta al giorno)
     imdb_ratings: bool = field(default_factory=lambda: os.getenv("IMDB_RATINGS", "1").strip().lower() not in ("0", "false", "no"))
     imdb_ratings_url: str = field(default_factory=lambda: os.getenv("IMDB_RATINGS_URL", "https://datasets.imdbws.com/title.ratings.tsv.gz"))
     refresh_minutes: int = field(default_factory=lambda: _int("REFRESH_MINUTES", 60))

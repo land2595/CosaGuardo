@@ -15,8 +15,9 @@ from pydantic import BaseModel
 
 from .admin import SERVICES, Admin, PinError
 from .arr import ASSENTE, SCONOSCIUTO, ArrError, Radarr, Requests, Sonarr
-from .catalog import Catalog, TMDBError
+from .catalog import CATEGORIES, Catalog, TMDBError
 from .plex import Plex, PlexError
+from .rotten import OmdbError
 from .config import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -71,9 +72,12 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="CosaGuardo", lifespan=lifespan)
 
 
-def _filter(items: list[dict], tipo: str, piattaforma: list[str] | None, q: str | None) -> list[dict]:
+def _filter(items: list[dict], tipo: str, piattaforma: list[str] | None, q: str | None,
+            categoria: str | None = None) -> list[dict]:
     if tipo in ("movie", "tv"):
         items = [i for i in items if i["type"] == tipo]
+    if categoria:
+        items = [i for i in items if categoria in i.get("categorie", [])]
     if piattaforma:
         items = [i for i in items if set(i["platforms"]) & set(piattaforma)]
     if q:
@@ -87,8 +91,10 @@ def get_catalogo(
     tipo: str = Query("all", pattern="^(all|movie|tv)$"),
     piattaforma: list[str] | None = Query(None),
     q: str | None = None,
+    categoria: str | None = None,
 ):
     d = catalog.data
+    sections = ("novita", "tendenze", "prossimamente", "migliori", "bambini")
     return {
         "aggiornato": d.get("aggiornato"),
         "aggiornamento_in_corso": catalog.refreshing,
@@ -96,11 +102,10 @@ def get_catalogo(
         "serve_chiave": catalog.needs_key,
         "versione": APP_VERSION,
         "piattaforme": d.get("piattaforme", {}),
-        "novita": _filter(d.get("novita", []), tipo, piattaforma, q),
-        "tendenze": _filter(d.get("tendenze", []), tipo, piattaforma, q),
-        "prossimamente": _filter(d.get("prossimamente", []), tipo, piattaforma, q),
-        "da_non_perdere": _filter(d.get("da_non_perdere", []), tipo, piattaforma, q),
-    }
+        "categorie": [{"id": k, "nome": v[0]} for k, v in CATEGORIES.items()],
+        "rotten_tomatoes": catalog.rt.configured,
+        "anni_migliori": settings.best_years,
+    } | {k: _filter(d.get(k, []), tipo, piattaforma, q, categoria) for k in sections}
 
 
 @app.get("/api/stato")
@@ -429,6 +434,48 @@ def put_admin_settings(body: Impostazioni, _: str = Depends(require_admin)):
             admin.update_service(name, values.model_dump(exclude_none=True))
     apply_admin_settings()
     return {name: admin.service(name) for name in SERVICES}
+
+
+def _omdb_state() -> dict:
+    key = catalog.rt.api_key
+    return {"configurata": bool(key), "da_env": bool(settings.omdb_api_key) and key == settings.omdb_api_key,
+            "chiave": f"{key[:2]}••••{key[-2:]}" if len(key) > 6 else ("••••" if key else ""),
+            "usate_oggi": catalog.rt.used_today, "limite": catalog.rt.daily_limit, "errore": catalog.rt.error}
+
+
+def apply_omdb_key() -> None:
+    """La chiave OMDb del menu admin prevale su OMDB_API_KEY."""
+    catalog.rt.api_key = admin.data.get("omdb_chiave") or settings.omdb_api_key
+
+
+apply_omdb_key()
+
+
+@app.get("/api/admin/omdb")
+def get_admin_omdb(_: str = Depends(require_admin)):
+    return _omdb_state()
+
+
+class ChiaveOmdb(BaseModel):
+    chiave: str
+
+
+@app.put("/api/admin/omdb")
+async def put_admin_omdb(body: ChiaveOmdb, _: str = Depends(require_admin)):
+    key = body.chiave.strip()
+    if key:
+        try:
+            await catalog.rt.verify(key)
+        except OmdbError as e:
+            raise HTTPException(400, str(e)) from e
+    admin.set_value("omdb_chiave", key)
+    apply_omdb_key()
+    catalog.rt.error = None
+    # Ricalcola subito "I migliori" con i voti di Rotten Tomatoes
+    catalog.force_best()
+    if not catalog.refreshing:
+        asyncio.create_task(catalog.refresh())
+    return _omdb_state()
 
 
 class NuovoTag(BaseModel):

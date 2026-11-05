@@ -24,7 +24,8 @@ PROVIDERS = [
 ]
 
 GENRE_IDS = {"Dramma": 18, "Commedia": 35, "Thriller": 53, "Azione": 28, "Fantascienza": 878, "Crime": 80,
-             "Animazione": 16, "Documentario": 99, "Fantasy": 14, "Reality": 10764}
+             "Animazione": 16, "Documentario": 99, "Fantasy": 14, "Reality": 10764, "Famiglia": 10751,
+             "Kids": 10762}
 GENRES = ["Dramma", "Commedia", "Thriller", "Azione", "Fantascienza", "Crime", "Animazione", "Documentario", "Fantasy"]
 WORDS = ["Notte", "Ombra", "Mare", "Città", "Fuoco", "Silenzio", "Vento", "Stelle", "Confine", "Segreto",
          "Ritorno", "Inverno", "Cuore", "Luce", "Destino", "Labirinto"]
@@ -80,13 +81,20 @@ SHOWS[2102] = {"title": "La casa sul lago", "first": "2023-03-01", "last": "2025
 SHOWS[2103] = {"title": "Episodi settimanali", "first": "2024-01-01", "last": (TODAY - timedelta(days=3)).isoformat(),
                "season": 2, "providers": [8], "next": {"air_date": (TODAY + timedelta(days=4)).isoformat(),
                                                         "season_number": 2, "episode_number": 5}}
-# Per "Da non perdere": stagione partita piu' di 6 mesi fa, reality show, film senza scheda italiana
+# Per "I migliori": stagione partita piu' di 6 mesi fa, reality show, film senza scheda italiana
 SHOWS[2105] = {"title": "Saga infinita", "first": "2022-01-01", "last": (TODAY - timedelta(days=6)).isoformat(),
                "season": 3, "season_start": (TODAY - timedelta(days=300)).isoformat(), "providers": [8]}
 SHOWS[2106] = {"title": "L'isola dei vip", "first": (TODAY - timedelta(days=40)).isoformat(),
                "last": (TODAY - timedelta(days=2)).isoformat(), "season": 1, "providers": [359], "genres": [10764]}
 UNTRANSLATED = {1007}
 FEW_IMDB_VOTES = {1003}
+# Per "Bambini": film per famiglie (G/PG), animazione per adulti (PG-13), serie per bambini e non
+KIDS_MOVIES = {1004: "G", 1010: "PG", 1012: "PG-13"}
+SHOWS[2007]["genres"] = [10762, 16]
+SHOWS[2009]["genres"] = [16, 35]
+TV_RATINGS = {2007: "TV-Y", 2009: "TV-MA"}
+# Per "I migliori": Tomatometer su OMDb (le serie di solito non ce l'hanno)
+ROTTEN = {1001: 97, 1002: 91, 1005: 55, 1006: 88, 1008: 100, 1009: 74, 1011: 83}
 SHOWS[2104] = {"title": "Orbita", "first": (TODAY + timedelta(days=20)).isoformat(), "last": "",
                "season": 1, "providers": [], "networks": [2552]}
 
@@ -179,12 +187,15 @@ def movie(mid: int, language: str = "it-IT"):
         "overview": overview,
         "poster_path": f"/p{mid}.svg", "backdrop_path": f"/b{mid}.svg",
         "release_date": m["date"], "runtime": r.randint(88, 150),
-        "genres": [{"id": GENRE_IDS[g], "name": g} for g in r.sample(GENRES, 2)],
+        "genres": [{"id": GENRE_IDS[g], "name": g} for g in (["Animazione", "Famiglia"] if mid in KIDS_MOVIES
+                                                               else r.sample(GENRES, 2))],
         "vote_average": round(r.uniform(5.8, 8.6), 1), "vote_count": r.randint(40, 4000),
         "popularity": r.uniform(10, 400),
         "watch/providers": _wp(m["providers"]),
         "release_dates": {"results": [{"iso_3166_1": "IT", "release_dates": [
-            {"type": 4, "release_date": m["date"] + "T00:00:00.000Z", "note": m.get("note", "")}]}]},
+            {"type": 4, "release_date": m["date"] + "T00:00:00.000Z", "note": m.get("note", "")}]},
+            {"iso_3166_1": "US", "release_dates": [
+                {"type": 3, "release_date": m["date"] + "T00:00:00.000Z", "certification": KIDS_MOVIES.get(mid, "R")}]}]},
         "production_companies": [{"name": c} for c in m.get("companies", [])],
     }
 
@@ -206,7 +217,8 @@ def tv(sid: int):
             {"season_number": n, "name": f"Stagione {n}", "episode_count": 8,
              "air_date": s["first"] if n == 1 else s.get("season_start") or (TODAY - timedelta(days=r.choice([5, 60]))).isoformat()}
             for n in range(1, s["season"] + 1)],
-        "genres": [{"id": g, "name": "Reality"} for g in s["genres"]] if s.get("genres")
+        "content_ratings": {"results": [{"iso_3166_1": "US", "rating": TV_RATINGS[sid]}] if sid in TV_RATINGS else []},
+        "genres": [{"id": g, "name": "Genere"} for g in s["genres"]] if s.get("genres")
         else [{"id": GENRE_IDS[g], "name": g} for g in r.sample(GENRES, 2)],
         "external_ids": external_ids(sid),
         "vote_average": round(r.uniform(6, 9), 1), "vote_count": r.randint(40, 4000),
@@ -250,3 +262,19 @@ def imdb_ratings():
         votes = 120 if tid in FEW_IMDB_VOTES else r.randint(1500, 90000)
         rows.append(f"tt{tid:07d}\t{rating}\t{votes}")
     return Response(gzip.compress(("\n".join(rows) + "\n").encode()), media_type="application/gzip")
+
+
+@app.get("/omdb/")
+def omdb(apikey: str = "", i: str = ""):
+    """Come OMDb: il Tomatometer e' tra i "Ratings"."""
+    if apikey.startswith("sbagliata"):
+        return Response('{"Response":"False","Error":"Invalid API key!"}', status_code=401,
+                        media_type="application/json")
+    tid = int(i[2:]) if i.startswith("tt") else 0
+    if i == "tt0111161":
+        tid, ratings = 0, [{"Source": "Rotten Tomatoes", "Value": "89%"}]
+    else:
+        ratings = [{"Source": "Internet Movie Database", "Value": "8.0/10"}]
+        if tid in ROTTEN:
+            ratings.append({"Source": "Rotten Tomatoes", "Value": f"{ROTTEN[tid]}%"})
+    return {"Response": "True", "imdbID": i, "Ratings": ratings}
