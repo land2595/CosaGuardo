@@ -14,7 +14,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+import unicodedata
 from collections import Counter
 from datetime import date, datetime, timezone
 
@@ -144,14 +146,21 @@ def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str]
         lines.append(desc)
     parts.append("Ecco i miei giudizi (voto da 0 a 5 stelle):\n" + ("\n".join(lines) or "(nessuno, per ora)"))
 
-    rated = [v for v in visti.values() if v.get("voto") is not None]
-    rated.sort(key=lambda v: -v["voto"])
+    # Yamtrack tiene anche i titoli "da vedere" (Planning) e quelli abbandonati: non sono visti
+    watched = [v for v in visti.values() if v.get("titolo") and v.get("stato") in SEEN_STATES]
+    rated = sorted((v for v in watched if v.get("voto") is not None), key=lambda v: -v["voto"])
     if rated:
         parts.append("Altri titoli che ho visto, con il mio voto da 0 a 10 (da Yamtrack o Plex):\n" +
                      "\n".join(f"- {v['titolo']}: {v['voto']:g}/10" for v in rated[:120]))
-    seen = [v["titolo"] for v in visti.values() if v.get("voto") is None and v.get("titolo")]
+    seen = [v["titolo"] for v in watched if v.get("voto") is None]
     if seen:
-        parts.append("Titoli che ho gia' visto o sto guardando (senza voto):\n" + "; ".join(seen[:300]))
+        parts.append("Titoli che ho gia' visto o sto guardando, senza voto (non suggerirli): " + "; ".join(seen[:300]))
+    planned = [v["titolo"] for v in visti.values() if v.get("titolo") and v.get("stato") == "Planning"]
+    if planned:
+        parts.append("Titoli che ho in lista per vederli, ma che NON ho visto (non suggerirli): " + "; ".join(planned[:200]))
+    dropped = [v["titolo"] for v in visti.values() if v.get("titolo") and v.get("stato") == "Dropped"]
+    if dropped:
+        parts.append("Titoli che ho iniziato e abbandonato (non suggerirli): " + "; ".join(dropped[:150]))
 
     if watchlist:
         parts.append("Nella mia watchlist, cose che voglio vedere (indicano i miei interessi, non suggerirle): "
@@ -177,14 +186,72 @@ def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str]
         "legato ai miei gusti (cita le mie note quando servono). Ordinali dal piu' adatto a me."
     )
     parts.append(
-        "Infine riscrivi la memoria dei miei gusti nel campo «profilo», che userai la prossima volta: "
-        f"al massimo {PROFILE_CHARS} caratteri, una riga per voce, ognuna che inizia con il nome della voce "
-        f"seguito da due punti ({', '.join(PROFILE_SECTIONS)}). In ogni voce elenca in modo asciutto e concreto "
-        "generi, temi, toni, stili, autori, interpreti, epoche. Parti dalla memoria attuale, conserva cio' che e' "
-        "ancora valido e le mie correzioni, e aggiungi cio' che imparano i nuovi giudizi, le note e le mie "
-        "reazioni ai suggerimenti. In «Da esplorare» metti le direzioni nuove che vuoi provare con me."
+        "Infine riscrivi la memoria dei miei gusti nel campo «profilo», che userai la prossima volta. Regole:\n"
+        "- Basala SOLO sui miei giudizi elencati sopra (mi piace, stelle e note) e sulle mie correzioni alla "
+        "memoria. Non dedurre gusti da titoli visti senza giudizio, watchlist, liste, scartati o suggerimenti.\n"
+        "- Come esempi puoi citare solo titoli che ho giudicato; mai altri titoli, nemmeno famosi. Non inventare: "
+        "se i giudizi dicono poco, scrivi poco.\n"
+        f"- Esattamente {len(PROFILE_SECTIONS)} righe, una per voce e ogni voce una sola volta, nell'ordine: "
+        + ", ".join(f"«{k}: ...»" for k in PROFILE_SECTIONS) + ". Nella stessa riga separa i punti con «;». "
+        "Se per una voce non hai elementi, scrivi solo un trattino.\n"
+        "- «Autori e interpreti»: solo registi, autori e attori dei titoli che ho giudicato bene. «Da esplorare»: "
+        "generi o direzioni nuove, senza nominare titoli.\n"
+        f"- Al massimo {PROFILE_CHARS} caratteri in tutto, frasi asciutte e concrete."
     )
     return "\n\n".join(parts)
+
+
+SEEN_STATES = ("Completed", "In progress", "Paused")
+
+
+def _norm(text: str) -> str:
+    text = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def clean_profile(text: str, gusti: list[dict]) -> str:
+    """Ripulisce la memoria scritta dal modello.
+
+    - una riga per voce, nell'ordine previsto (le voci ripetute vengono unite);
+    - tra parentesi restano solo i titoli che hai giudicato: gli esempi inventati spariscono.
+    """
+    known = [n for g in gusti for n in (_norm(g.get("title")), _norm(g.get("original_title"))) if len(n) >= 2]
+
+    def judged(name: str) -> bool:
+        n = _norm(name)
+        return len(n) >= 2 and any(n == k or (len(n) >= 4 and (n in k or k in n)) for k in known)
+
+    def fix_parens(value: str) -> str:
+        def keep(m: re.Match) -> str:
+            names = [x.strip() for x in re.split(r"[,;/]| e ", m.group(1)) if x.strip()]
+            ok = [x for x in names if judged(x)]
+            return f" ({', '.join(ok)})" if ok else ""
+        return re.sub(r"\s*\(([^()]*)\)", keep, value).strip()
+
+    sections: dict[str, list[str]] = {k: [] for k in PROFILE_SECTIONS}
+    by_norm = {_norm(k): k for k in PROFILE_SECTIONS}
+    current = None
+    for line in str(text or "").splitlines():
+        line = line.strip().lstrip("-•*").strip()
+        if not line:
+            continue
+        m = re.match(r"^\**([^:*]{2,32})\**\s*:\s*(.*)$", line)
+        key = by_norm.get(_norm(m.group(1))) if m else None
+        if key:
+            current, value = key, m.group(2)
+        elif m:
+            current = None  # voce sconosciuta: si scarta
+            continue
+        elif current:
+            value = line
+        else:
+            continue
+        if key != "Autori e interpreti":
+            value = fix_parens(value)
+        value = value.strip(" ;.")
+        if value and value != "-" and value not in sections[current]:
+            sections[current].append(value)
+    return "\n".join(f"{k}: {'; '.join(v)}" for k, v in sections.items() if v)
 
 
 def _json_from_text(text: str, key: str = "suggerimenti") -> dict:
@@ -478,7 +545,7 @@ class Consigli:
                 items = await self._resolve(catalog, raw, exclude | (profilo.history_ids if profilo else set()))
                 if profilo:
                     if memory:
-                        profilo.set_text(memory, "ai")
+                        profilo.set_text(clean_profile(memory, gusti.items), "ai")
                     profilo.add_history(items)
                 source = "ai"
             else:

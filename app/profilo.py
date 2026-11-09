@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 log = logging.getLogger("profilo")
 
 TEXT_MAX = 3000       # caratteri del profilo
+VERSION = 2           # dalla 2 la memoria scritta dall'AI si basa solo su mi piace, stelle e note
 HISTORY_MAX = 1500    # titoli suggeriti ricordati
 
 
@@ -27,10 +28,15 @@ def _now() -> str:
 class Profilo:
     def __init__(self, data_dir: str):
         self.file = os.path.join(data_dir, "profilo.json")
-        self.data: dict = {"testo": "", "aggiornato": None, "autore": None, "storico": []}
+        self.data: dict = {"testo": "", "aggiornato": None, "autore": None, "storico": [], "versione": VERSION}
         try:
             with open(self.file, encoding="utf-8") as f:
-                self.data |= json.load(f)
+                saved = json.load(f)
+            self.data |= saved
+            if saved.get("versione", 1) < VERSION and saved.get("autore") == "ai":
+                # Memoria scritta con le regole vecchie (poteva citare titoli mai giudicati): si ricrea
+                self.data |= {"testo": "", "aggiornato": None, "autore": None}
+            self.data["versione"] = VERSION
         except (OSError, ValueError):
             pass
 

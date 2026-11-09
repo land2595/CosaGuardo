@@ -1428,10 +1428,16 @@ function memoryHtml(sg) {
       <div class="mem-actions"><button type="button" class="btn-request" id="mem-save">Salva</button>
         <button type="button" class="a-link" id="mem-cancel">Annulla</button><span class="taste-msg" id="mem-msg"></span></div>`;
   } else {
-    const rows = m.testo.split("\n").filter((l) => l.trim()).map((l) => {
+    // Una riga per voce: le voci ripetute vengono unite
+    const groups = new Map();
+    for (const l of m.testo.split("\n").map((x) => x.trim()).filter(Boolean)) {
       const k = l.match(/^([^:]{2,32}):\s*(.*)$/);
-      return k ? `<div class="mem-row"><dt>${esc(k[1])}</dt><dd>${esc(k[2])}</dd></div>` : `<div class="mem-row"><dd>${esc(l)}</dd></div>`;
-    }).join("");
+      const [key, val] = k ? [k[1].trim(), k[2]] : ["", l];
+      groups.set(key, [...(groups.get(key) || []), val]);
+    }
+    const rows = [...groups].map(([k, v]) => k
+      ? `<div class="mem-row"><dt>${esc(k)}</dt><dd>${esc(v.join("; "))}</dd></div>`
+      : v.map((x) => `<div class="mem-row"><dd>${esc(x)}</dd></div>`).join("")).join("");
     body = `${rows ? `<dl class="mem-list">${rows}</dl>` : `<p class="mem-empty">Il profilo viene creato alla prima generazione dei suggerimenti.</p>`}
       <div class="mem-actions">
         <button type="button" class="a-link" id="mem-edit" ${sg.in_corso ? "disabled" : ""}>${m.testo ? "Modifica" : "Scrivi"}</button>

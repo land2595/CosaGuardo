@@ -505,3 +505,44 @@ def test_search_any_title(app_client):
     assert app_client.get("/api/titolo/movie/1202").json()["title"] == "Notte a Bisanzio"
     scheda = app_client.get("/api/titolo/movie/1202").json()
     assert app_client.put("/api/gusti/movie-1202", json={"voto": 4, "scheda": scheda}).json()["gusto"]["voto"] == 4
+
+
+def test_profile_only_from_judgments(app_client):
+    """La memoria: una riga per voce e tra parentesi solo titoli giudicati (niente esempi inventati)."""
+    from app.consigli import clean_profile
+
+    gusti = [{"title": "Dexter", "original_title": "Dexter"}, {"title": "Il gladiatore", "original_title": "Gladiator"},
+             {"title": "I Simpson", "original_title": "The Simpsons"}]
+    raw = ("Ama: anti-eroi carismatici (Dexter, Lucifer)\n"
+           "Ama: epica storica (Gladiator, Rome, Shogun).\n"
+           "Ama: **commedia nera** e satira (I Simpson, Fargo, Barry)\n"
+           "Non ama: commedia romantica\n"
+           "- Autori e interpreti: Michael C. Hall (Dexter)\n"
+           "Toni e temi: -\n"
+           "Da esplorare: thriller coreani (Blue Eye Samurai)\n"
+           "Altro: ignorato")
+    out = clean_profile(raw, gusti)
+    assert out.splitlines() == [
+        "Ama: anti-eroi carismatici (Dexter); epica storica (Gladiator); **commedia nera** e satira (I Simpson)",
+        "Non ama: commedia romantica",
+        "Autori e interpreti: Michael C. Hall (Dexter)",
+        "Da esplorare: thriller coreani",
+    ]
+
+
+def test_old_ai_profile_is_reset_and_planning_is_not_seen(tmp_path):
+    import json
+
+    (tmp_path / "profilo.json").write_text(json.dumps({"testo": "Ama: Fargo", "autore": "ai", "storico": [{"id": "tv-1"}]}))
+    p = Profilo(str(tmp_path))
+    assert p.text == "" and p.history_ids == {"tv-1"}
+    (tmp_path / "profilo.json").write_text(json.dumps({"testo": "Ama: mio", "autore": "utente"}))
+    assert Profilo(str(tmp_path)).text == "Ama: mio"
+
+    visti = {"tv-1": {"titolo": "Fargo", "stato": "Planning", "voto": None},
+             "tv-2": {"titolo": "Barry", "stato": "Dropped", "voto": 4.0},
+             "tv-3": {"titolo": "Dexter", "stato": "Completed", "voto": 9.0}}
+    prompt = build_prompt([], visti, [])
+    assert "Dexter: 9/10" in prompt and "Barry: 4/10" not in prompt
+    assert "NON ho visto (non suggerirli): Fargo" in prompt and "abbandonato (non suggerirli): Barry" in prompt
+    assert "SOLO sui miei giudizi" in prompt and "mai altri titoli" in prompt
