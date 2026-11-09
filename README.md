@@ -144,7 +144,7 @@ Nella scheda di ogni titolo c'è il riquadro **Il tuo giudizio**: ♥ *Mi piace*
 
 ![Il tuo giudizio e i voti nella scheda](docs/giudizio.png)
 
-La sezione **Suggeriti per te** mostra 30 film e serie scelti tra tutto quello che è uscito negli ultimi 50 anni, non solo le novità, ognuno con il motivo per cui potrebbe piacerti. Ogni titolo viene cercato su TMDB, così hai locandina, trama, voti, piattaforme italiane (se è in streaming) e il pulsante per richiederlo a Radarr o Sonarr. Con l'AI i suggerimenti partono **solo quando premi il pulsante** (*Chiedi all'AI*, poi *Aggiorna con i nuovi giudizi* o *Nuovi suggerimenti*): mettere mi piace, votare o scrivere note non fa nessuna richiesta, la pagina ti segnala soltanto che hai cambiato qualcosa. Senza AI i consigliati di TMDB (gratis) si rifanno da soli quando apri la sezione dopo aver cambiato i tuoi giudizi.
+La sezione **Suggeriti per te** mostra 30 film e serie scelti tra tutto quello che è uscito negli ultimi 50 anni, non solo le novità, ognuno con il motivo per cui potrebbe piacerti. Ogni titolo viene cercato su TMDB, così hai locandina, trama, voti, piattaforme italiane (se è in streaming) e il pulsante per richiederlo a Radarr o Sonarr. Con l'AI i suggerimenti partono **solo quando premi il pulsante** (*Genera suggerimenti*, poi *Aggiorna suggerimenti* o *Nuovi suggerimenti*): mettere mi piace, votare o scrivere note non fa nessuna richiesta, il pulsante si evidenzia soltanto quando hai cambiato qualcosa. Senza AI i consigliati di TMDB (gratis) si rifanno da soli quando apri la sezione dopo aver cambiato i tuoi giudizi.
 
 ![Suggeriti per te](docs/per-te.png)
 
@@ -153,6 +153,10 @@ La sezione **Suggeriti per te** mostra 30 film e serie scelti tra tutto quello c
   - **OpenRouter / OpenAI**: funziona con qualsiasi servizio che offre l'API `/chat/completions` di OpenAI. Con [OpenRouter](https://openrouter.ai/keys) una sola chiave dà accesso ai modelli di OpenAI, Google, Anthropic, Meta e altri; l'indirizzo predefinito è `https://openrouter.ai/api/v1`. Per OpenAI usa `https://api.openai.com/v1`, per Ollama `http://IP:11434/v1`. Inserisci indirizzo, chiave e modello (il pulsante *Carica l'elenco dei modelli* mostra quelli disponibili), oppure usa `OPENAI_BASE_URL`, `OPENAI_API_KEY` e `AI_MODEL`. Se il modello non supporta le risposte strutturate, CosaGuardo chiede il JSON nel testo.
 
   Le chiavi dei due servizi restano salvate: cambiando servizio non perdi l'altra.
+
+  **Profilo dei gusti (la memoria dell'AI).** A ogni aggiornamento, nella stessa richiesta, l'AI riscrive un profilo dei tuoi gusti in cinque voci (*Ama*, *Non ama*, *Autori e interpreti*, *Toni e temi*, *Da esplorare*) e lo rilegge la volta dopo. Così impara nel tempo da giudizi, note, titoli visti, watchlist e scartati, e soprattutto da come hai accolto i titoli che ti ha suggerito (voti, mi piace, *Non mi interessa*). Il profilo è nel riquadro *Profilo dei gusti* della sezione: puoi leggerlo e correggerlo, e l'AI rispetta le tue correzioni. I titoli già suggeriti non vengono riproposti, quindi ogni aggiornamento va oltre i precedenti; *Azzera* li dimentica. Tutto è salvato in `/data/profilo.json`.
+
+  **Ricerca.** La casella *Cerca film, serie, attori* filtra la sezione aperta e sotto mostra *Altri titoli* da tutto il catalogo TMDB, di qualsiasi anno, più attori e registi: apri un titolo e dagli mi piace, stelle e note per insegnare all'AI i tuoi gusti anche su quello che hai visto in passato.
 - **Senza chiave**: CosaGuardo usa i titoli che TMDB consiglia per quelli a cui hai messo mi piace o almeno 4 stelle.
 
 ### Titoli già visti: Yamtrack e Plex
@@ -256,7 +260,9 @@ Per i titoli **in arrivo** TMDB non sa ancora su quale piattaforma usciranno. Co
 | `POST /api/gusti/{id}/note-ai` | Tre note brevissime (max 20 parole) proposte dall'AI per quel titolo. Non salva niente. |
 | `GET /api/gusti` | I tuoi giudizi (mi piace, voto, note). |
 | `PUT /api/gusti/{id}` | Aggiorna il giudizio di un titolo: `{"mi_piace": true, "voto": 4, "note": "..."}` (ogni campo è facoltativo; `"voto": null` lo toglie). |
-| `GET /api/suggeriti` | *Suggeriti per te* (se i giudizi sono cambiati, li ricalcola in background). `POST /api/suggeriti/aggiorna` li rifà subito. |
+| `GET /api/suggeriti` | *Suggeriti per te*, con il profilo dei gusti (senza AI, se i giudizi sono cambiati, li ricalcola in background). `POST /api/suggeriti/aggiorna` li rifà subito. |
+| `GET` / `PUT /api/profilo`, `DELETE /api/profilo/storico` | Il profilo dei gusti usato dall'AI (leggerlo, correggerlo) e i titoli già suggeriti (azzerarli). |
+| `GET /api/cerca?q=` | Ricerca libera di film, serie e persone su TMDB. |
 | `GET /api/visti` | I titoli già visti (da Yamtrack e/o Plex), con stato, voto e fonte. |
 | `GET` / `PUT /api/admin/ai`, `POST /api/admin/ai/modelli` | Servizio, chiave e modello dell'AI; elenco dei modelli di un servizio compatibile OpenAI (serve il token). |
 | `GET` / `PUT /api/admin/yamtrack`, `GET` / `PUT /api/admin/visti` | Collegamento a Yamtrack e fonti dei titoli già visti (serve il token). |

@@ -907,6 +907,40 @@ class Catalog:
                     return results[0]["id"]
         return None
 
+    async def search_any(self, query: str) -> dict:
+        """Ricerca libera su TMDB: film e serie di qualsiasi anno, piu' attori e registi."""
+        query = (query or "").strip()
+        if len(query) < 2:
+            return {"titoli": [], "persone": []}
+        async with self._client() as client:
+            pages = await asyncio.gather(*(self._get(client, "/search/multi", query=query, include_adult="false",
+                                                     page=n) for n in (1, 2)))
+        titoli, persone, seen = [], [], set()
+        for r in (r for page in pages for r in page.get("results") or []):
+            kind = r.get("media_type")
+            if not r.get("id") or (kind, r["id"]) in seen:
+                continue
+            seen.add((kind, r["id"]))
+            if kind == "person":
+                if r.get("known_for_department") in ("Acting", "Directing", "Writing"):
+                    persone.append({"id": r["id"], "nome": r.get("name") or "", "foto": _photo(r.get("profile_path")),
+                                    "mestiere": r.get("known_for_department"),
+                                    "noto_per": [k.get("title") or k.get("name") for k in r.get("known_for") or []
+                                                 if k.get("title") or k.get("name")][:3]})
+                continue
+            if kind not in ("movie", "tv") or set(r.get("genre_ids") or []) & CREDITS_EXCLUDED_GENRES:
+                continue
+            date_ = (r.get("release_date") if kind == "movie" else r.get("first_air_date")) or None
+            titoli.append({
+                "id": f"{kind}-{r['id']}", "tmdb_id": r["id"], "type": kind,
+                "title": r.get("title") or r.get("name") or r.get("original_title") or r.get("original_name"),
+                "original_title": r.get("original_title") or r.get("original_name"),
+                "date": date_, "year": (date_ or "")[:4],
+                "poster": _photo(r.get("poster_path"), "w342"),
+                "rating": round(r.get("vote_average") or 0, 1), "votes": r.get("vote_count") or 0,
+            })
+        return {"titoli": titoli, "persone": persone[:8]}
+
     async def recommendations(self, kind: str, tmdb_id: int) -> list[tuple[str, int]]:
         """Titoli consigliati da TMDB per un titolo: [(tipo, id), ...]."""
         async with self._client() as client:

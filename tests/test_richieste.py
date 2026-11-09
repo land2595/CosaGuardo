@@ -11,6 +11,7 @@ from app.catalog import Catalog
 from app.consigli import Consigli
 from app.gusti import Gusti
 from app.liste import Liste
+from app.profilo import Profilo
 from app.yamtrack import Yamtrack
 from app.plex import Plex
 from app.config import Settings
@@ -52,6 +53,7 @@ def services(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "admin", Admin(str(tmp_path)))
     monkeypatch.setattr(main, "gusti", Gusti(str(tmp_path)))
     monkeypatch.setattr(main, "liste", Liste(str(tmp_path)))
+    monkeypatch.setattr(main, "profilo", Profilo(str(tmp_path)))
     monkeypatch.setattr(main, "consigli", Consigli(str(tmp_path)))
     monkeypatch.setattr(main, "yamtrack", Yamtrack())
     main.apply_admin_settings()
