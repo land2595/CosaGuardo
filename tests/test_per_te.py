@@ -164,6 +164,10 @@ def test_suggestions_without_ai_use_tmdb(app_client):
     assert d["titoli"][1]["platforms"] == []
     # Un titolo suggerito si puo' richiedere e giudicare come gli altri
     assert main._find("movie-1202")["title"] == "Notte a Bisanzio"
+    # Senza AI (gratis) i suggerimenti si rifanno da soli quando cambiano i gusti
+    main.consigli._last_try = float("-inf")
+    app_client.put("/api/gusti/movie-1002", json={"mi_piace": True})
+    assert main.consigli.needs_update(main.gusti.modified, True)
 
 
 def test_suggestions_with_ai(app_client, monkeypatch):
@@ -171,6 +175,7 @@ def test_suggestions_with_ai(app_client, monkeypatch):
 
     async def fake_ask(self, prompt):
         seen["prompt"] = prompt
+        seen["calls"] = seen.get("calls", 0) + 1
         return [
             {"titolo": "Il mare d'inverno", "titolo_originale": "Il mare d'inverno", "anno": 1986, "tipo": "film",
              "motivo": "Stessa malinconia di cui parli nelle note."},
@@ -205,8 +210,16 @@ def test_suggestions_with_ai(app_client, monkeypatch):
     assert d["titoli"][0]["motivo"].startswith("Stessa malinconia")
     assert "Malinconia e mare" in seen["prompt"] and "Oltre il confine: 8/10" in seen["prompt"]
     assert not d["da_aggiornare"]
+    calls = seen["calls"]
+    started = []
+    monkeypatch.setattr(main, "_start_generation", lambda: started.append(1))
     app_client.put("/api/gusti/movie-1001", json={"voto": 5})
-    assert app_client.get("/api/suggeriti").json()["da_aggiornare"]
+    app_client.put("/api/gusti/movie-1002", json={"mi_piace": True, "note": "Bello"})
+    d = app_client.get("/api/suggeriti").json()
+    # Con l'AI niente richieste automatiche: si aggiorna solo con il pulsante
+    assert d["da_aggiornare"] and not d["in_corso"] and not started
+    assert seen["calls"] == calls
+    assert app_client.post("/api/suggeriti/aggiorna").json()["in_corso"] and started == [1]
 
 
 def test_ask_sends_structured_request(tmp_path, monkeypatch):

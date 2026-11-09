@@ -141,7 +141,7 @@ class Consigli:
         self.model = model.strip() or (DEFAULT_MODEL if self.provider == "anthropic" else "")
         self.running = False
         self.data: dict = {"titoli": [], "generato": None, "gusti": None, "fonte": None, "errore": None}
-        self._last_try = 0.0
+        self._last_try = float("-inf")
         try:
             with open(self.file, encoding="utf-8") as f:
                 self.data |= json.load(f)
@@ -310,16 +310,27 @@ class Consigli:
 
     # ------------------------------------------------------- generazione
 
-    def needs_update(self, gusti_modified: str | None, has_tastes: bool) -> bool:
-        if self.running or not has_tastes:
-            return False
-        if time.monotonic() - self._last_try < RETRY_SECONDS:
+    def stale(self, gusti_modified: str | None) -> bool:
+        """I suggerimenti non rispecchiano piu' i gusti, il servizio o il modello attuali."""
+        if not self.data.get("generato"):
             return False
         if self.data.get("fonte") != ("ai" if self.configured else "tmdb"):
             return True
         if self.configured and self.data.get("modello") != self.label:
             return True  # cambiato modello o servizio
-        return not self.data.get("titoli") or self.data.get("gusti") != gusti_modified
+        return self.data.get("gusti") != gusti_modified
+
+    def needs_update(self, gusti_modified: str | None, has_tastes: bool) -> bool:
+        """Se ricalcolare da soli i suggerimenti aprendo la sezione.
+
+        Solo senza AI (i consigliati di TMDB sono gratis): con l'AI ogni aggiornamento e' una
+        richiesta a pagamento, quindi parte solo dal pulsante (POST /api/suggeriti/aggiorna).
+        """
+        if self.configured or self.running or not has_tastes:
+            return False
+        if time.monotonic() - self._last_try < RETRY_SECONDS:
+            return False
+        return not self.data.get("titoli") or self.stale(gusti_modified)
 
     async def generate(self, catalog, gusti, visti: dict[str, dict], platforms: list[str]) -> None:
         """Ricalcola i suggerimenti e li salva. Gli errori finiscono in data["errore"]."""

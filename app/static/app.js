@@ -973,7 +973,7 @@ async function saveTaste(values) {
       renderTaste(i);
       tasteMsg(values.note !== undefined ? "Note salvate." : "Salvato: terrò conto di questo nei suggerimenti.");
     }
-    if (state.suggeriti) state.suggeriti.da_aggiornare = true;
+    if (state.suggeriti?.generato) state.suggeriti.da_aggiornare = true;
     if (state.view !== "richieste") render();
   } catch (err) {
     tasteMsg(err.message, true);
@@ -1033,14 +1033,22 @@ function forYouBarHtml(sg) {
     : "";
   const by = sg.fonte === "ai" ? `Scelti da ${sg.modello || "Claude"}` : "Consigliati da TMDB";
   const seenFrom = (sg.visti || []).map((f) => VISTI_NAMES[f]).join(" e ");
+  const canAsk = sg.gusti || (sg.ai && sg.visti?.length);
+  // Con l'AI i suggerimenti partono solo da qui: ogni pressione e' una sola richiesta
+  const firstAi = sg.ai && sg.fonte !== "ai";
   const status = sg.in_corso
     ? `<span class="dot busy"></span> ${sg.ai ? "L'AI sta scegliendo i titoli per te…" : "Cerco titoli simili a quelli che ti piacciono…"}`
-    : sg.generato ? `${esc(by)} in base a ${plural(sg.gusti, "giudizio", "giudizi")}${seenFrom ? ` e a quello che hai visto su ${esc(seenFrom)}` : ""} · ${esc(when)}` : "";
-  const btn = !sg.in_corso && (sg.gusti || (sg.ai && sg.visti?.length))
-    ? `<button class="btn-request ${sg.da_aggiornare ? "hot" : ""}" id="sugg-refresh" type="button">↻ ${sg.da_aggiornare ? "Aggiorna con i nuovi giudizi" : "Nuovi suggerimenti"}</button>` : "";
+    : sg.generato && sg.da_aggiornare ? `${esc(by)} · ${esc(when)}`
+      : sg.generato ? `${esc(by)} in base a ${plural(sg.gusti, "giudizio", "giudizi")}${seenFrom ? ` e a quello che hai visto su ${esc(seenFrom)}` : ""} · ${esc(when)}`
+      : sg.ai && canAsk ? "Premi il pulsante quando vuoi i suggerimenti dell'AI." : "";
+  const label = firstAi ? "✦ Chiedi all'AI" : sg.da_aggiornare ? "↻ Aggiorna con i nuovi giudizi" : "↻ Nuovi suggerimenti";
+  const btn = !sg.in_corso && canAsk
+    ? `<button class="btn-request ${sg.da_aggiornare || firstAi ? "hot" : ""}" id="sugg-refresh" type="button"${sg.ai ? ` title="Una sola richiesta all'AI"` : ""}>${label}</button>` : "";
+  const aiNote = sg.ai && !sg.in_corso && canAsk && (sg.da_aggiornare || firstAi)
+    ? `<p class="note">L'AI viene chiamata solo quando premi <b>${esc(label.slice(2))}</b>: mi piace, voti e note non fanno partire richieste, così non si spreca niente.${sg.da_aggiornare && !firstAi ? " Hai cambiato qualcosa dall'ultima volta." : ""}</p>` : "";
   const hint = !sg.ai
     ? `<p class="note">Per suggerimenti davvero su misura, che tengano conto delle tue note e dei film di tutti gli ultimi 50 anni, aggiungi una <b>chiave API</b> (Claude, OpenRouter o un altro servizio compatibile OpenAI) nel menu impostazioni (l'ingranaggio in alto). Intanto uso i titoli consigliati da TMDB per quelli che ti sono piaciuti.</p>` : "";
-  return `${hint}<div class="for-you-bar"><span class="for-you-status">${status}</span>${btn}</div>
+  return `${hint}<div class="for-you-bar"><span class="for-you-status">${status}</span>${btn}</div>${aiNote}
     ${sg.errore ? `<p class="note err">${esc(sg.errore)}</p>` : ""}`;
 }
 
