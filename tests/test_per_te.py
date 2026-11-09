@@ -13,6 +13,7 @@ from app.config import Settings
 from app.consigli import Consigli, build_prompt
 from app.gusti import Gusti
 from app.liste import Liste
+from app.profilo import Profilo
 from app.plex import Plex
 from app.yamtrack import Yamtrack, YamtrackError, parse_export
 from tests import mock_arr, mock_tmdb, mock_yamtrack
@@ -38,6 +39,7 @@ def app_client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "requests", Requests(str(tmp_path)))
     monkeypatch.setattr(main, "gusti", Gusti(str(tmp_path)))
     monkeypatch.setattr(main, "liste", Liste(str(tmp_path)))
+    monkeypatch.setattr(main, "profilo", Profilo(str(tmp_path)))
     monkeypatch.setattr(main, "consigli", Consigli(str(tmp_path)))
     monkeypatch.setattr(main, "yamtrack", Yamtrack())
     plex = Plex("http://plex", mock_arr.PLEX_TOKEN)
@@ -248,7 +250,7 @@ def test_ask_sends_structured_request(tmp_path, monkeypatch):
     monkeypatch.setattr(c, "_client", lambda key=None: anthropic.AsyncAnthropic(
         api_key="sk-ant-test", http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler))))
     out = asyncio.run(c.ask("I miei gusti"))
-    assert out[0]["titolo_originale"] == "Heat"
+    assert out["suggerimenti"][0]["titolo_originale"] == "Heat"
     body = sent["body"]
     assert "/v1/messages" in sent["url"]
     assert body["model"] == "claude-opus-5-5" and body["fallbacks"] == "default"
@@ -363,7 +365,7 @@ def test_openai_without_structured_output(tmp_path, monkeypatch):
     monkeypatch.setattr(c, "_http", lambda key, base_url: httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api), base_url=base_url))
     out = asyncio.run(c.ask("gusti"))
-    assert out[0]["anno"] == 1986
+    assert out["suggerimenti"][0]["anno"] == 1986
     assert len(seen["bodies"]) == 2 and "response_format" not in seen["bodies"][1]
 
 
@@ -425,3 +427,81 @@ def test_prompt_uses_watchlist_and_ignored(app_client, monkeypatch):
     assert "Il mare d'inverno (1986)" in seen["prompt"]
     # L'ignorato non viene suggerito anche se il modello lo propone
     assert main.consigli.data["titoli"] == []
+
+
+# ------------------------------------------------ memoria dei gusti e ricerca
+
+def test_memory_learns_and_goes_beyond(app_client, monkeypatch):
+    prompts = []
+    answers = [
+        {"suggerimenti": [
+            {"titolo": "Il mare d'inverno", "titolo_originale": "Il mare d'inverno", "anno": 1986, "tipo": "film",
+             "motivo": "Malinconia."},
+            {"titolo": "Codice zero", "titolo_originale": "Codice zero", "anno": 2026, "tipo": "serie", "motivo": "Mistero."}],
+         "profilo": "Ama: noir malinconici\nNon ama: reality"},
+        {"suggerimenti": [], "profilo": "Ama: noir malinconici"},
+        {"suggerimenti": [
+            {"titolo": "Il mare d'inverno", "titolo_originale": "Il mare d'inverno", "anno": 1986, "tipo": "film",
+             "motivo": "Di nuovo."},
+            {"titolo": "Notte a Bisanzio", "titolo_originale": "Notte a Bisanzio", "anno": 1994, "tipo": "film",
+             "motivo": "Atmosfera."}],
+         "profilo": "Ama: noir malinconici, Fellini\nNon ama: reality, misteri seriali"},
+    ]
+
+    async def fake_ask(self, prompt):
+        prompts.append(prompt)
+        return answers.pop(0)
+
+    monkeypatch.setattr(Consigli, "ask", fake_ask)
+    main.consigli.api_key = "k"
+    assert app_client.get("/api/profilo").json() == {"testo": "", "aggiornato": None, "autore": None, "suggeriti": 0}
+    app_client.put("/api/gusti/movie-1001", json={"mi_piace": True})
+    asyncio.run(main._generate())
+    assert "memoria dei miei gusti e' ancora vuota" in prompts[0] and "«profilo»" in prompts[0]
+    p = app_client.get("/api/profilo").json()
+    assert p["testo"] == "Ama: noir malinconici\nNon ama: reality" and p["autore"] == "ai" and p["suggeriti"] == 2
+
+    # Reazioni ai suggerimenti e correzione a mano della memoria
+    app_client.put("/api/gusti/movie-1201", json={"voto": 5, "note": "Bellissimo"})
+    app_client.put("/api/liste/ignorati/tv-2101", json={"scheda": {"title": "Codice zero", "year": "2026"}})
+    asyncio.run(main._generate())
+    d = app_client.get("/api/suggeriti").json()
+    assert not d["da_aggiornare"]
+    r = app_client.put("/api/profilo", json={"testo": "  Ama: noir malinconici, Fellini  \nNon ama: reality "}).json()
+    assert r["autore"] == "utente" and r["testo"] == "Ama: noir malinconici, Fellini\nNon ama: reality"
+    assert app_client.get("/api/suggeriti").json()["da_aggiornare"]
+
+    asyncio.run(main._generate())
+    prompt = prompts[-1]
+    assert "Ama: noir malinconici, Fellini" in prompt and "correzioni valgono" in prompt
+    assert "Il mare d'inverno (1986): voto 5/5, note: \"Bellissimo\"" in prompt
+    assert "Codice zero (2026): scartato" in prompt
+    assert "gia' suggerito (non riproporli" in prompt and "Il mare d'inverno (1986)" in prompt
+    # I titoli gia' suggeriti non tornano: solo quelli nuovi
+    assert [it["id"] for it in main.consigli.data["titoli"]] == ["movie-1202"]
+    p = app_client.get("/api/profilo").json()
+    assert p["autore"] == "ai" and "misteri seriali" in p["testo"] and p["suggeriti"] == 3
+    assert app_client.delete("/api/profilo/storico").json()["suggeriti"] == 0
+
+
+def test_memory_text_is_capped_and_cleared(tmp_path):
+    p = Profilo(str(tmp_path))
+    p.set_text("x" * 5000, "utente")
+    assert len(p.text) == 3000 and p.edited_by_user
+    p.set_text("   ", "utente")
+    assert p.text == "" and p.data["autore"] is None and Profilo(str(tmp_path)).text == ""
+
+
+def test_search_any_title(app_client):
+    r = app_client.get("/api/cerca", params={"q": "notte"}).json()
+    ids = [t["id"] for t in r["titoli"]]
+    assert "movie-1202" in ids
+    old = next(t for t in r["titoli"] if t["id"] == "movie-1202")
+    assert old["year"] == "1994" and old["type"] == "movie" and old["poster"].endswith("/w342/p1202.jpg")
+    assert r["persone"] == []
+    assert app_client.get("/api/cerca", params={"q": "rossi"}).json()["persone"][0]["nome"] == "Anna Rossi"
+    assert app_client.get("/api/cerca", params={"q": "a"}).json() == {"titoli": [], "persone": []}
+    # Un risultato si apre come qualsiasi titolo e si puo' giudicare
+    assert app_client.get("/api/titolo/movie/1202").json()["title"] == "Notte a Bisanzio"
+    scheda = app_client.get("/api/titolo/movie/1202").json()
+    assert app_client.put("/api/gusti/movie-1202", json={"voto": 4, "scheda": scheda}).json()["gusto"]["voto"] == 4

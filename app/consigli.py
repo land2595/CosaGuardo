@@ -1,7 +1,9 @@
 """La sezione "Suggeriti per te".
 
 I suggerimenti li sceglie un modello AI, partendo da mi piace, voti e note (e dai titoli gia'
-visti su Yamtrack o Plex), pescando tra film e serie degli ultimi 50 anni. Il modello puo' essere
+visti su Yamtrack o Plex), pescando tra film e serie degli ultimi 50 anni. Il modello tiene una
+memoria dei gusti (app/profilo.py) che riscrive a ogni aggiornamento e ricorda i titoli gia'
+suggeriti, per non riproporli e per imparare da come sono stati accolti. Il modello puo' essere
 Claude (API di Anthropic) oppure uno qualsiasi raggiungibile con un'API compatibile con quella
 di OpenAI (OpenRouter, OpenAI, un server locale...).
 Ogni titolo suggerito viene poi cercato su TMDB per avere locandina, trama e piattaforme italiane.
@@ -55,8 +57,9 @@ SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "profilo": {"type": "string", "description": "La memoria dei gusti aggiornata, in punti brevi"},
     },
-    "required": ["suggerimenti"],
+    "required": ["suggerimenti", "profilo"],
     "additionalProperties": False,
 }
 
@@ -65,8 +68,11 @@ SYSTEM = (
     "di tutto il mondo. Consigli titoli a una persona che vive in Italia partendo dai suoi gusti reali: "
     "cosa le e' piaciuto, i voti che ha dato e soprattutto le note in cui spiega cosa l'ha colpita. "
     "Scegli titoli che condividono quelle qualita' (tono, temi, stile di regia o scrittura, ritmo, "
-    "tipo di personaggi), non solo lo stesso genere. Rispondi sempre in italiano."
+    "tipo di personaggi), non solo lo stesso genere. Tieni una memoria dei suoi gusti che affini ogni "
+    "volta, imparando da come reagisce ai titoli che le hai gia' consigliato. Rispondi sempre in italiano."
 )
+PROFILE_SECTIONS = ("Ama", "Non ama", "Autori e interpreti", "Toni e temi", "Da esplorare")
+PROFILE_CHARS = 2000
 
 
 NOTE_SCHEMA = {
@@ -95,10 +101,35 @@ def _names(items: list[dict]) -> str:
     return "; ".join(f"{i.get('title')} ({i.get('year') or '?'})" for i in items if i.get("title"))
 
 
+def reactions(storico: list[dict], gusti: list[dict], visti: dict[str, dict],
+              watchlist: list[dict], ignorati: list[dict]) -> list[str]:
+    """Come sono stati accolti i titoli suggeriti in passato: il segnale piu' utile per imparare."""
+    past = {h["id"] for h in storico}
+    out = []
+    for g in gusti:
+        if g["id"] not in past:
+            continue
+        bits = ["mi piace" if g.get("mi_piace") else None,
+                f"voto {g['voto']}/5" if g.get("voto") is not None else None,
+                f'note: "{g["note"]}"' if g.get("note") else None]
+        out.append(f"- {g.get('title')} ({g.get('year') or '?'}): " + ", ".join(b for b in bits if b))
+    for key, v in visti.items():
+        if key in past and key not in {g["id"] for g in gusti}:
+            out.append(f"- {v.get('titolo')}: visto" + (f", voto {v['voto']:g}/10" if v.get("voto") is not None else ""))
+    out += [f"- {i.get('title')} ({i.get('year') or '?'}): messo in watchlist" for i in watchlist if i["id"] in past]
+    out += [f"- {i.get('title')} ({i.get('year') or '?'}): scartato, non mi interessa" for i in ignorati if i["id"] in past]
+    return out
+
+
 def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str], how_many: int = HOW_MANY,
-                 watchlist: list[dict] | None = None, ignorati: list[dict] | None = None) -> str:
-    """Il profilo dei gusti spiegato a Claude."""
+                 watchlist: list[dict] | None = None, ignorati: list[dict] | None = None,
+                 profilo: str = "", storico: list[dict] | None = None) -> str:
+    """Il profilo dei gusti spiegato al modello."""
     first_year = date.today().year - YEARS
+    watchlist, ignorati, storico = watchlist or [], ignorati or [], storico or []
+    parts = [("La tua memoria dei miei gusti (l'hai scritta tu le volte scorse; se l'ho corretta io, "
+              "le mie correzioni valgono piu' di tutto):\n" + profilo) if profilo.strip()
+             else "La memoria dei miei gusti e' ancora vuota: questa e' la prima volta."]
     lines = []
     for g in sorted(gusti, key=lambda g: (g.get("voto") is None, -(g.get("voto") or 0), not g.get("mi_piace"))):
         bits = ["mi piace" if g.get("mi_piace") else None,
@@ -111,7 +142,7 @@ def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str]
         if g.get("note"):
             desc += f'. Note: "{g["note"]}"'
         lines.append(desc)
-    parts = [f"Ecco i miei giudizi (voto da 0 a 5 stelle):\n" + ("\n".join(lines) or "(nessuno, per ora)")]
+    parts.append("Ecco i miei giudizi (voto da 0 a 5 stelle):\n" + ("\n".join(lines) or "(nessuno, per ora)"))
 
     rated = [v for v in visti.values() if v.get("voto") is not None]
     rated.sort(key=lambda v: -v["voto"])
@@ -128,6 +159,12 @@ def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str]
     if ignorati:
         parts.append("Titoli che ho scartato perche' non mi interessano (non suggerirli, ne' titoli troppo simili): "
                      + _names(ignorati[:150]))
+    react = reactions(storico, gusti, visti, watchlist, ignorati)
+    if react:
+        parts.append("Come ho accolto i titoli che mi hai suggerito le volte scorse (impara da qui cosa funziona "
+                     "e cosa no):\n" + "\n".join(react[:150]))
+    if storico:
+        parts.append("Titoli che mi hai gia' suggerito (non riproporli, cerca altro): " + _names(storico[:400]))
 
     parts.append(
         f"Suggeriscimi {how_many} film e serie TV che potrebbero piacermi davvero, scegliendo tra tutto cio' "
@@ -139,11 +176,19 @@ def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str]
         "Per ogni titolo indica titolo italiano, titolo originale, anno esatto di uscita, tipo e il motivo "
         "legato ai miei gusti (cita le mie note quando servono). Ordinali dal piu' adatto a me."
     )
+    parts.append(
+        "Infine riscrivi la memoria dei miei gusti nel campo «profilo», che userai la prossima volta: "
+        f"al massimo {PROFILE_CHARS} caratteri, una riga per voce, ognuna che inizia con il nome della voce "
+        f"seguito da due punti ({', '.join(PROFILE_SECTIONS)}). In ogni voce elenca in modo asciutto e concreto "
+        "generi, temi, toni, stili, autori, interpreti, epoche. Parti dalla memoria attuale, conserva cio' che e' "
+        "ancora valido e le mie correzioni, e aggiungi cio' che imparano i nuovi giudizi, le note e le mie "
+        "reazioni ai suggerimenti. In «Da esplorare» metti le direzioni nuove che vuoi provare con me."
+    )
     return "\n\n".join(parts)
 
 
-def _json_from_text(text: str, key: str = "suggerimenti") -> list:
-    """La lista `key` da una risposta JSON (anche dentro un blocco ```json)."""
+def _json_from_text(text: str, key: str = "suggerimenti") -> dict:
+    """L'oggetto JSON della risposta (anche dentro un blocco ```json), con la lista `key`."""
     text = (text or "").strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
@@ -151,12 +196,12 @@ def _json_from_text(text: str, key: str = "suggerimenti") -> list:
     if start < 0 or end < start:
         raise AiError("Risposta del modello non leggibile.")
     try:
-        items = json.loads(text[start:end + 1])[key]
-    except (ValueError, KeyError, TypeError) as e:
+        obj = json.loads(text[start:end + 1])
+    except ValueError as e:
         raise AiError("Risposta del modello non leggibile.") from e
-    if not isinstance(items, list):
+    if not isinstance(obj, dict) or not isinstance(obj.get(key), list):
         raise AiError("Risposta del modello non leggibile.")
-    return items
+    return obj
 
 
 def short(text: str, words: int = NOTE_WORDS) -> str:
@@ -252,16 +297,16 @@ class Consigli:
         except anthropic.AnthropicError as e:
             raise self._error(e) from e
 
-    async def ask(self, prompt: str) -> list[dict]:
-        """Chiede i suggerimenti al modello scelto; restituisce la lista grezza."""
+    async def ask(self, prompt: str) -> dict:
+        """Chiede i suggerimenti al modello scelto: {"suggerimenti": [...], "profilo": "..."}."""
         example = ('{"suggerimenti": [{"titolo": "...", "titolo_originale": "...", "anno": 1999, '
-                   '"tipo": "film" o "serie", "motivo": "..."}]}')
+                   '"tipo": "film" o "serie", "motivo": "..."}], "profilo": "Ama: ...\\nNon ama: ..."}')
         return await self._complete(SYSTEM, prompt, SCHEMA, "suggerimenti", example, max_tokens=16000, effort="medium")
 
     async def note(self, item: dict, gusto: dict | None) -> list[str]:
         """Qualche nota brevissima (max 20 parole) sul perche' un titolo e' piaciuto: una sola richiesta."""
-        raw = await self._complete(NOTE_SYSTEM, build_note_prompt(item, gusto), NOTE_SCHEMA, "note",
-                                   '{"note": ["...", "...", "..."]}', max_tokens=1500, effort="low")
+        raw = (await self._complete(NOTE_SYSTEM, build_note_prompt(item, gusto), NOTE_SCHEMA, "note",
+                                    '{"note": ["...", "...", "..."]}', max_tokens=1500, effort="low"))["note"]
         out = [short(n) for n in raw if isinstance(n, str) and n.strip()]
         out = list(dict.fromkeys(n for n in out if n))[:NOTE_HOW_MANY]
         if not out:
@@ -269,13 +314,13 @@ class Consigli:
         return out
 
     async def _complete(self, system: str, prompt: str, schema: dict, key: str, example: str,
-                        max_tokens: int, effort: str) -> list:
+                        max_tokens: int, effort: str) -> dict:
         if self.provider == "openai":
             return await self._ask_openai(system, prompt, schema, key, example)
         return await self._ask_claude(system, prompt, schema, key, max_tokens, effort)
 
     async def _ask_claude(self, system: str, prompt: str, schema: dict, key: str, max_tokens: int,
-                          effort: str) -> list:
+                          effort: str) -> dict:
         extra: dict = {}
         if self.model in FALLBACK_MODELS:
             # Se il modello rifiuta la richiesta, l'API la ripete su un altro modello
@@ -356,7 +401,7 @@ class Consigli:
         if models and model not in models:
             raise AiError(f"Il modello «{model}» non c'e' tra quelli offerti da {base_url}.")
 
-    async def _ask_openai(self, system: str, prompt: str, schema: dict, key: str, example: str) -> list:
+    async def _ask_openai(self, system: str, prompt: str, schema: dict, key: str, example: str) -> dict:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
         structured = {"type": "json_schema", "json_schema": {"name": key, "strict": True, "schema": schema}}
         try:
@@ -410,7 +455,8 @@ class Consigli:
             return False
         return not self.data.get("titoli") or self.stale(gusti_modified)
 
-    async def generate(self, catalog, gusti, visti: dict[str, dict], platforms: list[str], liste=None) -> None:
+    async def generate(self, catalog, gusti, visti: dict[str, dict], platforms: list[str], liste=None,
+                       profilo=None) -> None:
         """Ricalcola i suggerimenti e li salva. Gli errori finiscono in data["errore"]."""
         if self.running:
             return
@@ -422,9 +468,18 @@ class Consigli:
             ignorati = liste.items("ignorati") if liste else []
             exclude = {g["id"] for g in gusti.items} | set(visti) | {i["id"] for i in watchlist + ignorati}
             if self.configured:
-                prompt = build_prompt(gusti.items, visti, platforms, watchlist=watchlist, ignorati=ignorati)
-                raw = await self.ask(prompt)
-                items = await self._resolve(catalog, raw, exclude)
+                prompt = build_prompt(gusti.items, visti, platforms, watchlist=watchlist, ignorati=ignorati,
+                                      profilo=profilo.text if profilo else "",
+                                      storico=profilo.history if profilo else [])
+                answer = await self.ask(prompt)
+                raw = answer if isinstance(answer, list) else answer.get("suggerimenti") or []
+                memory = "" if isinstance(answer, list) else str(answer.get("profilo") or "").strip()
+                # I titoli gia' suggeriti in passato non tornano: si va sempre oltre
+                items = await self._resolve(catalog, raw, exclude | (profilo.history_ids if profilo else set()))
+                if profilo:
+                    if memory:
+                        profilo.set_text(memory, "ai")
+                    profilo.add_history(items)
                 source = "ai"
             else:
                 items = await self._from_tmdb(catalog, gusti.items, exclude)

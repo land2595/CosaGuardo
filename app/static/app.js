@@ -22,6 +22,9 @@ const state = {
   suggeriti: null,
   extra: new Map(),
   person: null,
+  searchRes: null,
+  memOpen: false,
+  memEdit: false,
 };
 
 const $ = (s) => document.querySelector(s);
@@ -229,6 +232,11 @@ function blockHtml(title, items, ranked = false) {
 }
 
 function render() {
+  renderView();
+  renderSearchMore();
+}
+
+function renderView() {
   const items = filtered();
   content.setAttribute("aria-busy", "false");
   $("#empty").hidden = items.length > 0 || !state.data;
@@ -1390,25 +1398,86 @@ function forYouBarHtml(sg) {
     ? new Date(sg.generato).toLocaleString("it-IT", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
     : "";
   const by = sg.fonte === "ai" ? `Scelti da ${sg.modello || "Claude"}` : "Consigliati da TMDB";
-  const seenFrom = (sg.visti || []).map((f) => VISTI_NAMES[f]).join(" e ");
   const canAsk = sg.gusti || (sg.ai && sg.visti?.length);
-  // Con l'AI i suggerimenti partono solo da qui: ogni pressione e' una sola richiesta
+  // Con l'AI i suggerimenti partono solo dal pulsante: una richiesta per pressione
   const firstAi = sg.ai && sg.fonte !== "ai";
   const status = sg.in_corso
-    ? `<span class="dot busy"></span> ${sg.ai ? "L'AI sta scegliendo i titoli per te…" : "Cerco titoli simili a quelli che ti piacciono…"}`
-    : sg.generato && sg.da_aggiornare ? `${esc(by)} · ${esc(when)}`
-      : sg.generato ? `${esc(by)} in base a ${plural(sg.gusti, "giudizio", "giudizi")}${seenFrom ? ` e a quello che hai visto su ${esc(seenFrom)}` : ""} · ${esc(when)}`
-      : sg.ai && canAsk ? "Premi il pulsante quando vuoi i suggerimenti dell'AI." : "";
-  const label = firstAi ? "✦ Chiedi all'AI" : sg.da_aggiornare ? "↻ Aggiorna con i nuovi giudizi" : "↻ Nuovi suggerimenti";
+    ? `<span class="dot busy"></span> Selezione in corso…`
+    : sg.generato ? `${esc(by)} · ${esc(when)}` : "";
+  const label = firstAi ? "✦ Genera suggerimenti" : sg.da_aggiornare ? "↻ Aggiorna suggerimenti" : "↻ Nuovi suggerimenti";
   const btn = !sg.in_corso && canAsk
-    ? `<button class="btn-request ${sg.da_aggiornare || firstAi ? "hot" : ""}" id="sugg-refresh" type="button"${sg.ai ? ` title="Una sola richiesta all'AI"` : ""}>${label}</button>` : "";
-  const aiNote = sg.ai && !sg.in_corso && canAsk && (sg.da_aggiornare || firstAi)
-    ? `<p class="note">L'AI viene chiamata solo quando premi <b>${esc(label.slice(2))}</b>: mi piace, voti e note non fanno partire richieste, così non si spreca niente.${sg.da_aggiornare && !firstAi ? " Hai cambiato qualcosa dall'ultima volta." : ""}</p>` : "";
+    ? `<button class="btn-request ${sg.da_aggiornare || firstAi ? "hot" : ""}" id="sugg-refresh" type="button">${label}</button>` : "";
   const hint = !sg.ai
-    ? `<p class="note">Per suggerimenti davvero su misura, che tengano conto delle tue note e dei film di tutti gli ultimi 50 anni, aggiungi una <b>chiave API</b> (Claude, OpenRouter o un altro servizio compatibile OpenAI) nel menu impostazioni (l'ingranaggio in alto). Intanto uso i titoli consigliati da TMDB per quelli che ti sono piaciuti.</p>` : "";
-  return `${hint}<div class="for-you-bar"><span class="for-you-status">${status}</span>${btn}</div>${aiNote}
-    ${sg.errore ? `<p class="note err">${esc(sg.errore)}</p>` : ""}`;
+    ? `<p class="note">Suggerimenti basati sui consigliati di TMDB. Per una selezione personalizzata configura un servizio AI nelle impostazioni.</p>` : "";
+  return `${hint}<div class="for-you-bar"><span class="for-you-status">${status}</span>${btn}</div>
+    ${sg.errore ? `<p class="note err">${esc(sg.errore)}</p>` : ""}${memoryHtml(sg)}`;
 }
+
+// La memoria dei gusti che l'AI riscrive a ogni aggiornamento (e che si puo' correggere)
+function memoryHtml(sg) {
+  const m = sg.profilo;
+  if (!sg.ai || !m) return "";
+  const when = m.aggiornato
+    ? new Date(m.aggiornato).toLocaleString("it-IT", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+    : "";
+  const meta = m.testo ? `${m.autore === "utente" ? "Modificato da te" : "Aggiornato dall'AI"} · ${when}` : "Da creare";
+  let body;
+  if (state.memEdit) {
+    body = `<textarea id="mem-text" rows="9" maxlength="3000" spellcheck="true" aria-label="Profilo dei gusti"
+        placeholder="Ama: …&#10;Non ama: …&#10;Autori e interpreti: …&#10;Toni e temi: …&#10;Da esplorare: …">${esc(m.testo)}</textarea>
+      <div class="mem-actions"><button type="button" class="btn-request" id="mem-save">Salva</button>
+        <button type="button" class="a-link" id="mem-cancel">Annulla</button><span class="taste-msg" id="mem-msg"></span></div>`;
+  } else {
+    const rows = m.testo.split("\n").filter((l) => l.trim()).map((l) => {
+      const k = l.match(/^([^:]{2,32}):\s*(.*)$/);
+      return k ? `<div class="mem-row"><dt>${esc(k[1])}</dt><dd>${esc(k[2])}</dd></div>` : `<div class="mem-row"><dd>${esc(l)}</dd></div>`;
+    }).join("");
+    body = `${rows ? `<dl class="mem-list">${rows}</dl>` : `<p class="mem-empty">Il profilo viene creato alla prima generazione dei suggerimenti.</p>`}
+      <div class="mem-actions">
+        <button type="button" class="a-link" id="mem-edit" ${sg.in_corso ? "disabled" : ""}>${m.testo ? "Modifica" : "Scrivi"}</button>
+        ${m.suggeriti ? `<span class="mem-count">${plural(m.suggeriti, "titolo già suggerito", "titoli già suggeriti")}</span>
+          <button type="button" class="a-link" id="mem-reset">Azzera</button>` : ""}
+      </div>`;
+  }
+  return `<details class="memory" id="memory" ${state.memOpen || state.memEdit ? "open" : ""}>
+    <summary><span class="mem-title">Profilo dei gusti</span><span class="mem-meta">${esc(meta)}</span></summary>
+    <div class="mem-body">${body}</div></details>`;
+}
+
+async function saveMemory(testo) {
+  const r = await fetch("/api/profilo", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ testo }) });
+  if (!r.ok) throw new Error("Salvataggio non riuscito.");
+  return r.json();
+}
+
+content.addEventListener("toggle", (e) => {
+  if (e.target.id === "memory") state.memOpen = e.target.open;
+}, true);
+
+content.addEventListener("click", async (e) => {
+  const sg = state.suggeriti;
+  if (!sg) return;
+  const id = e.target.closest("button")?.id;
+  if (id === "mem-edit") { state.memEdit = true; render(); $("#mem-text")?.focus(); }
+  if (id === "mem-cancel") { state.memEdit = false; render(); }
+  if (id === "mem-save") {
+    try {
+      sg.profilo = await saveMemory($("#mem-text").value);
+      if (sg.generato) sg.da_aggiornare = true;
+      state.memEdit = false;
+      render();
+    } catch (err) {
+      $("#mem-msg").textContent = err.message;
+      $("#mem-msg").classList.add("err");
+    }
+  }
+  if (id === "mem-reset") {
+    const b = e.target.closest("button");
+    if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Conferma"; return; }
+    const r = await fetch("/api/profilo/storico", { method: "DELETE" });
+    if (r.ok) { sg.profilo = await r.json(); render(); }
+  }
+});
 
 function renderForYou(items) {
   const sg = state.suggeriti;
@@ -1419,9 +1488,8 @@ function renderForYou(items) {
   }
   const mine = filtered("preferiti").sort((a, b) => (b.voto ?? -1) - (a.voto ?? -1) || (b.mi_piace ? 1 : 0) - (a.mi_piace ? 1 : 0));
   if (!sg.gusti && !(sg.ai && sg.visti?.length) && !items.length) {
-    content.innerHTML = `<div class="req-empty"><h3>Dimmi cosa ti piace</h3>
-      <p>Apri un film o una serie e premi <b>♥ Mi piace</b>, dai un voto da 0 a 5 stelle e scrivi nelle note cosa ti è piaciuto.<br>
-      Qui troverai i titoli scelti per te, anche dei decenni passati.</p></div>`;
+    content.innerHTML = `<div class="req-empty"><h3>Nessun giudizio</h3>
+      <p>Valuta film e serie con <b>♥ Mi piace</b>, le stelle e le note. Con la ricerca trovi qualsiasi titolo, anche dei decenni passati.</p></div>`;
     return;
   }
   const sugg = items.length
@@ -1430,6 +1498,70 @@ function renderForYou(items) {
       : sg.titoli?.length ? `<div class="req-empty"><h3>Nessun suggerimento con questi filtri</h3><p>Prova a scegliere “Tutti” o un'altra piattaforma.</p></div>` : "";
   content.innerHTML = forYouBarHtml(sg) + sugg + (mine.length ? blockHtml("I tuoi giudizi", mine) : "");
 }
+
+// ------------------------------------------- ricerca di qualsiasi titolo
+
+let searchTimer = null;
+
+function scheduleSearch() {
+  clearTimeout(searchTimer);
+  const q = state.q;
+  if (q.length < 2) { state.searchRes = null; return; }
+  if (state.searchRes?.q === q) return;
+  state.searchRes = { q, loading: true, titoli: [], persone: [] };
+  searchTimer = setTimeout(async () => {
+    let d = { titoli: [], persone: [], errore: true };
+    try {
+      const r = await fetch(`/api/cerca?q=${encodeURIComponent(q)}`);
+      if (r.ok) d = await r.json();
+    } catch { /* resta l'errore */ }
+    if (state.q !== q) return;
+    state.searchRes = { q, ...d, loading: false };
+    renderSearchMore();
+  }, 350);
+}
+
+function searchTileHtml(t) {
+  const g = state.gusti.get(t.id);
+  const mine = g ? `<span class="my-taste">${g.mi_piace ? "♥" : ""}${g.voto != null ? ` ★ ${g.voto}` : ""}</span>` : "";
+  return personTileHtml({ ...t, ruolo: "" }).replace('<div class="cp">', `<div class="cp">${mine}`);
+}
+
+function personChipHtml(p) {
+  const img = p.foto ? `<img src="${esc(p.foto)}" alt="" loading="lazy">` : `<span class="pc-ini">${esc(initials(p.nome))}</span>`;
+  return `<button type="button" class="person-chip" data-person="${p.id}">${img}
+    <span><b>${esc(p.nome)}</b><small>${esc(p.noto_per.join(", ") || (p.mestiere === "Acting" ? "Attore" : "Regia"))}</small></span></button>`;
+}
+
+function renderSearchMore() {
+  content.querySelector("#search-more")?.remove();
+  const r = state.searchRes;
+  if (!r || r.q !== state.q || state.view === "richieste" || !state.data) return;
+  const shown = new Set([...content.querySelectorAll(".card[data-id]")].map((c) => c.dataset.id));
+  const titoli = (r.titoli || []).filter((t) => (state.tipo === "all" || t.type === state.tipo) &&
+    !shown.has(t.id) && !state.liste.ignorati.has(t.id));
+  const persone = state.tipo === "all" ? r.persone || [] : [];
+  let body = "";
+  if (r.loading) body = `<p class="cast-load">Ricerca in corso…</p>`;
+  else if (titoli.length || persone.length) {
+    body = (persone.length ? `<div class="person-chips">${persone.map(personChipHtml).join("")}</div>` : "") +
+      (titoli.length ? `<div class="p-grid">${titoli.map(searchTileHtml).join("")}</div>` : "");
+  } else if (r.errore) body = `<p class="cast-load">Ricerca non disponibile. Riprova tra poco.</p>`;
+  else return;
+  content.insertAdjacentHTML("beforeend", `<section class="block search-more" id="search-more">
+    <div class="block-head"><h2>Altri titoli</h2>${titoli.length ? `<span class="count">${plural(titoli.length, "risultato", "risultati")}</span>` : ""}</div>
+    ${body}</section>`);
+  $("#empty").hidden = true;
+}
+
+content.addEventListener("click", (e) => {
+  const sm = e.target.closest("#search-more");
+  if (!sm) return;
+  const c = e.target.closest(".credit[data-kind]");
+  if (c) { state.person = null; openTitle(c.dataset.kind, Number(c.dataset.tmdb)); return; }
+  const p = e.target.closest(".person-chip[data-person]");
+  if (p) openPerson(Number(p.dataset.person));
+});
 
 content.addEventListener("click", (e) => {
   if (e.target.closest("#sugg-refresh")) loadSuggeriti(true);
@@ -2022,7 +2154,7 @@ $("#tipo").addEventListener("click", (e) => {
   render();
 });
 
-$("#search").addEventListener("input", (e) => { state.q = e.target.value.trim(); renderGenres(); renderChips(); render(); });
+$("#search").addEventListener("input", (e) => { state.q = e.target.value.trim(); scheduleSearch(); renderGenres(); renderChips(); render(); });
 
 $("#genres").addEventListener("click", (e) => {
   const b = e.target.closest(".genre");

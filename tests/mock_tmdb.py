@@ -306,12 +306,34 @@ def videos(kind: str, tid: int):
 
 
 @app.get("/search/{kind}")
-def search(kind: str, query: str = "", year: int | None = None, first_air_date_year: int | None = None):
+def search(kind: str, query: str = "", year: int | None = None, first_air_date_year: int | None = None,
+           page: int = 1):
+    if kind == "multi":
+        return search_multi(query, page)
     pool = (MOVIES | OLD_MOVIES) if kind == "movie" else SHOWS
     wanted = year or first_air_date_year
     found = [i for i, m in pool.items() if m["title"].lower() == query.lower()
              and (not wanted or (m.get("date") or m.get("first") or "").startswith(str(wanted)))]
     return {"results": [{"id": i} for i in found]}
+
+
+def search_multi(query: str, page: int | None = None):
+    """Ricerca libera: titoli che contengono il testo, piu' una persona finta."""
+    if (page or 1) > 1:
+        return {"results": []}
+    q = query.lower()
+    out = [{"media_type": "movie", "id": i, "title": m["title"], "original_title": m["title"],
+            "release_date": m.get("date") or "", "poster_path": f"/p{i}.jpg", "vote_average": 7.1,
+            "vote_count": 1200, "genre_ids": m.get("genres", [])}
+           for i, m in (MOVIES | OLD_MOVIES).items() if q in m["title"].lower()]
+    out += [{"media_type": "tv", "id": i, "name": m["title"], "original_name": m["title"],
+             "first_air_date": m.get("first") or "", "poster_path": None, "vote_average": 8.0,
+             "vote_count": 300, "genre_ids": m.get("genres", [])}
+            for i, m in SHOWS.items() if q in m["title"].lower()]
+    if "rossi" in q:
+        out.append({"media_type": "person", "id": 501, "name": "Anna Rossi", "known_for_department": "Acting",
+                    "profile_path": "/a.jpg", "known_for": [{"title": "La notte di Roma"}]})
+    return {"results": out}
 
 
 @app.get("/movie/{mid}/recommendations")

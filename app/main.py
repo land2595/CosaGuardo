@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .admin import SERVICES, Admin, PinError
 from .arr import ASSENTE, SCONOSCIUTO, ArrError, Radarr, Requests, Sonarr
@@ -19,6 +19,7 @@ from .catalog import CATEGORIES, Catalog, TMDBError
 from .consigli import DEFAULT_MODEL, DEFAULT_OPENAI_URL, MODELS, PROVIDERS, AiError, Consigli
 from .gusti import Gusti, GustiError
 from .liste import LISTE, Liste, ListeError
+from .profilo import Profilo
 from .yamtrack import Yamtrack, YamtrackError
 from .plex import Plex, PlexError
 from .rotten import OmdbError
@@ -39,6 +40,7 @@ requests = Requests(settings.data_dir)
 admin = Admin(settings.data_dir, settings.admin_pin)
 gusti = Gusti(settings.data_dir)
 liste = Liste(settings.data_dir)
+profilo = Profilo(settings.data_dir)
 consigli = Consigli(settings.data_dir, settings.anthropic_api_key, settings.ai_model)
 yamtrack = Yamtrack(settings.yamtrack_url, settings.yamtrack_user, settings.yamtrack_password)
 _tasks: set[asyncio.Task] = set()
@@ -541,7 +543,7 @@ def _has_tastes() -> bool:
 
 async def _generate() -> None:
     names = [p["name"] for p in catalog.data.get("piattaforme", {}).values()]
-    await consigli.generate(catalog, gusti, await _visti(), names, liste)
+    await consigli.generate(catalog, gusti, await _visti(), names, liste, profilo)
 
 
 def _start_generation() -> None:
@@ -556,7 +558,15 @@ def _suggeriti_state() -> dict:
             "errore": d.get("errore"), "in_corso": consigli.running, "ai": consigli.configured,
             "yamtrack": yamtrack.configured, "visti": _visti_sources(), "modello": d.get("modello"),
             "gusti": len(gusti.items),
-            "da_aggiornare": consigli.stale(gusti.modified)}
+            "da_aggiornare": _stale(), "profilo": profilo.public()}
+
+
+def _stale() -> bool:
+    """I suggerimenti non tengono conto di giudizi, servizio AI o correzioni al profilo piu' recenti."""
+    generated = consigli.data.get("generato")
+    edited = profilo.edited_by_user
+    return consigli.stale(gusti.modified) or bool(
+        consigli.configured and generated and edited and edited > generated)
 
 
 @app.get("/api/suggeriti")
@@ -567,6 +577,39 @@ async def get_suggeriti():
         _start_generation()
         return _suggeriti_state() | {"in_corso": True}
     return _suggeriti_state()
+
+
+class TestoProfilo(BaseModel):
+    testo: str = Field("", max_length=6000)
+
+
+@app.get("/api/profilo")
+def get_profilo():
+    """La memoria dei gusti che l'AI usa per i suggerimenti."""
+    return profilo.public()
+
+
+@app.put("/api/profilo")
+def put_profilo(body: TestoProfilo):
+    """Correzione a mano della memoria: l'AI la rispetta la volta successiva."""
+    profilo.set_text(body.testo, "utente")
+    return profilo.public()
+
+
+@app.delete("/api/profilo/storico")
+def delete_profilo_storico():
+    """Dimentica i titoli gia' suggeriti: potranno essere riproposti."""
+    profilo.reset_history()
+    return profilo.public()
+
+
+@app.get("/api/cerca")
+async def get_cerca(q: str = Query("", max_length=100)):
+    """Ricerca libera di film, serie e persone su TMDB."""
+    try:
+        return await catalog.search_any(q)
+    except TMDBError as e:
+        raise HTTPException(502, str(e)) from e
 
 
 @app.post("/api/suggeriti/aggiorna")
