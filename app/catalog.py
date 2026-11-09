@@ -17,6 +17,7 @@ import httpx
 from .config import PLATFORMS, Settings
 from .imdb import ImdbRatings
 from .rotten import RottenTomatoes
+from .youtube import YouTube
 
 log = logging.getLogger("catalog")
 
@@ -93,7 +94,8 @@ class Catalog:
         self.refreshing = False
         self._provider_map: dict[int, str] = {}
         self._details: dict[str, dict] = {}
-        self._trailers: dict[str, dict | None] = {}
+        self._trailers: dict[str, tuple[float, dict | None]] = {}
+        self.youtube = YouTube()
         self._tv_info: dict[int, tuple[float, dict]] = {}
         self._schede: dict[str, tuple[float, dict]] = {}
         self._persone: dict[int, tuple[float, dict]] = {}
@@ -757,17 +759,30 @@ class Catalog:
     # ------------------------------------------------------- trailer e id
 
     async def trailer(self, kind: str, tmdb_id: int) -> dict | None:
-        """Il trailer YouTube migliore: in italiano se c'e', altrimenti in inglese."""
+        """Il trailer in italiano.
+
+        TMDB ha quasi solo i trailer originali: se manca quello italiano lo si
+        cerca su YouTube, e solo se non si trova nemmeno li' resta l'inglese.
+        """
         key = f"{kind}-{tmdb_id}"
         if key in self._trailers:
-            return self._trailers[key]
+            at, cached = self._trailers[key]
+            # L'italiano resta; se non c'era si riprova il giorno dopo
+            if (cached or {}).get("lingua") == "it" or time.monotonic() - at < 86400:
+                return cached
         async with self._client() as client:
-            res = await self._get(client, f"/{kind}/{tmdb_id}/videos", include_video_language="it,en,null")
-        videos = [v for v in res.get("results", []) if v.get("site") == "YouTube" and v.get("key")]
+            info = await self._get(client, f"/{kind}/{tmdb_id}", append_to_response="videos",
+                                   include_video_language="it,en,null")
+        videos = [v for v in (info.get("videos") or {}).get("results", [])
+                  if v.get("site") == "YouTube" and v.get("key")]
+
+        def italian(v: dict) -> bool:
+            name = f" {(v.get('name') or '').lower()} "
+            return v.get("iso_639_1") == "it" or any(w in name for w in (" ita ", " italiano ", "trailer ufficiale"))
 
         def score(v: dict) -> tuple:
             return (
-                v.get("iso_639_1") == "it",
+                italian(v),
                 v.get("type") == "Trailer",
                 v.get("type") == "Teaser",
                 bool(v.get("official")),
@@ -775,8 +790,16 @@ class Catalog:
             )
 
         best = max(videos, key=score, default=None)
-        found = {"key": best["key"], "name": best.get("name"), "lingua": best.get("iso_639_1")} if best else None
-        self._trailers[key] = found
+        found = None
+        if best and italian(best):
+            found = {"key": best["key"], "name": best.get("name"), "lingua": "it"}
+        elif info:
+            titles = [info.get("title") or info.get("name"), info.get("original_title") or info.get("original_name")]
+            year = (info.get("release_date") or info.get("first_air_date") or "")[:4] or None
+            found = await self.youtube.trailer_ita(titles, kind, year)
+        if not found and best:
+            found = {"key": best["key"], "name": best.get("name"), "lingua": best.get("iso_639_1")}
+        self._trailers[key] = (time.monotonic(), found)
         return found
 
     async def tvdb_id(self, tmdb_id: int) -> int | None:

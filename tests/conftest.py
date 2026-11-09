@@ -3,6 +3,7 @@ import pytest
 
 from app.imdb import ImdbRatings
 from app.rotten import RottenTomatoes
+from app.youtube import YouTube
 from tests import mock_tmdb
 
 
@@ -14,4 +15,6 @@ def mock_imdb(monkeypatch):
         transport=httpx.ASGITransport(app=mock_tmdb.app), base_url="http://mock"))
     monkeypatch.setenv("OMDB_URL", "http://mock/omdb/")
     monkeypatch.setattr(RottenTomatoes, "_client", lambda self: httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mock_tmdb.app), base_url="http://mock"))
+    monkeypatch.setattr(YouTube, "_client", lambda self: httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mock_tmdb.app), base_url="http://mock"))

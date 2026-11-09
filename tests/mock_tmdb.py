@@ -7,6 +7,7 @@ Poi:    TMDB_API_KEY=test TMDB_BASE_URL=http://127.0.0.1:9000 \
 
 import gzip
 import hashlib
+import json
 import random
 from datetime import date, timedelta
 
@@ -254,6 +255,7 @@ def movie(mid: int, language: str = "it-IT"):
                 {"type": 3, "release_date": m["date"] + "T00:00:00.000Z", "certification": KIDS_MOVIES.get(mid, "R")}]}]},
         "production_companies": [{"name": c} for c in m.get("companies", [])],
         "credits": {"cast": _cast("movie", mid)},
+        "videos": videos("movie", mid),
     }
 
 
@@ -282,6 +284,7 @@ def tv(sid: int):
         "popularity": r.uniform(10, 400),
         "watch/providers": _wp(s["providers"]),
         "aggregate_credits": {"cast": _cast("tv", sid)},
+        "videos": videos("tv", sid),
     }
 
 
@@ -294,15 +297,46 @@ def configuration(api_key: str = ""):
 
 @app.get("/{kind}/{tid}/videos")
 def videos(kind: str, tid: int):
-    return {"results": [
+    """tid % 5 == 0: nessun video; == 2: solo trailer inglesi; altrimenti anche quello italiano."""
+    if tid % 5 == 0:
+        return {"results": []}
+    res = [
         {"site": "YouTube", "key": "teaser-en", "type": "Teaser", "iso_639_1": "en", "official": True,
          "published_at": "2026-01-01T00:00:00.000Z", "name": "Teaser"},
         {"site": "YouTube", "key": "trailer-en", "type": "Trailer", "iso_639_1": "en", "official": True,
          "published_at": "2026-02-01T00:00:00.000Z", "name": "Official Trailer"},
-        {"site": "YouTube", "key": "aqz-KE-bpKQ", "type": "Trailer", "iso_639_1": "it", "official": True,
-         "published_at": "2026-02-02T00:00:00.000Z", "name": "Trailer ufficiale italiano"},
-        {"site": "Vimeo", "key": "x", "type": "Trailer", "iso_639_1": "it"},
-    ] if tid % 5 else []}
+    ]
+    if tid % 5 != 2:
+        res += [
+            {"site": "YouTube", "key": "aqz-KE-bpKQ", "type": "Trailer", "iso_639_1": "it", "official": True,
+             "published_at": "2026-02-02T00:00:00.000Z", "name": "Trailer ufficiale italiano"},
+            {"site": "Vimeo", "key": "x", "type": "Trailer", "iso_639_1": "it"},
+        ]
+    return {"results": res}
+
+
+def _yt(vid: str, title: str, length: str = "2:31") -> dict:
+    return {"videoRenderer": {"videoId": vid, "title": {"runs": [{"text": title}]},
+                              "ownerText": {"runs": [{"text": "Canale"}]}, "lengthText": {"simpleText": length}}}
+
+
+@app.get("/results")
+def youtube_results(search_query: str = ""):
+    """Pagina dei risultati di YouTube: il JSON e' dentro uno <script>."""
+    title = next((m["title"] for m in MOVIES.values() if search_query.lower().startswith(m["title"].lower())), None)
+    items = []
+    if title:
+        items = [
+            _yt("recensione1", f"{title} - Recensione (trailer incluso)"),
+            _yt("altrofilm01", "Un altro film | Trailer Italiano"),
+            _yt("subita00001", f"{title} | Trailer SUB ITA"),
+            _yt("lungo000001", f"{title} | Trailer italiano esteso", "12:04"),
+            _yt("itaDOPPIATO", f"{title.upper()} | Trailer Ufficiale Italiano HD"),
+        ]
+    data = {"contents": {"twoColumnSearchResultsRenderer": {"primaryContents": {"sectionListRenderer": {
+        "contents": [{"itemSectionRenderer": {"contents": items}}]}}}}}
+    html = f"<html><script nonce=\"x\">var ytInitialData = {json.dumps(data)};</script></html>"
+    return Response(html, media_type="text/html")
 
 
 @app.get("/search/{kind}")
