@@ -1498,8 +1498,9 @@ function renderForYou(items) {
       <p>Valuta film e serie con <b>♥ Mi piace</b>, le stelle e le note. Con la ricerca trovi qualsiasi titolo, anche dei decenni passati.</p></div>`;
     return;
   }
+  const films = items.filter((it) => it.type === "movie"), series = items.filter((it) => it.type !== "movie");
   const sugg = items.length
-    ? blockHtml("Suggeriti per te", items)
+    ? (films.length ? blockHtml("Film per te", films) : "") + (series.length ? blockHtml("Serie per te", series) : "")
     : sg.in_corso ? `<section class="block"><div class="grid">${'<div class="card skeleton"><div class="poster"></div><h3></h3><span class="meta"></span></div>'.repeat(6)}</div></section>`
       : sg.titoli?.length ? `<div class="req-empty"><h3>Nessun suggerimento con questi filtri</h3><p>Prova a scegliere “Tutti” o un'altra piattaforma.</p></div>` : "";
   content.innerHTML = forYouBarHtml(sg) + sugg + (mine.length ? blockHtml("I tuoi giudizi", mine) : "");
