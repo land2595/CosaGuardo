@@ -74,6 +74,7 @@ class Plex:
                         "stagioni": m.get("childCount") if kind == "tv" else None,
                         "episodi": m.get("leafCount") if kind == "tv" else None,
                         "visti": m.get("viewedLeafCount") if kind == "tv" else (m.get("viewCount") or 0) > 0,
+                        "voto": m.get("userRating"),  # voto dato in Plex, da 0 a 10
                         "url": self._web_url(m.get("ratingKey")),
                     }
                     for g in m.get("Guid", []):

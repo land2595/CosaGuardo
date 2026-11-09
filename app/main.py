@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from .admin import SERVICES, Admin, PinError
 from .arr import ASSENTE, SCONOSCIUTO, ArrError, Radarr, Requests, Sonarr
 from .catalog import CATEGORIES, Catalog, TMDBError
-from .consigli import DEFAULT_MODEL, MODELS, AiError, Consigli
+from .consigli import DEFAULT_MODEL, DEFAULT_OPENAI_URL, MODELS, PROVIDERS, AiError, Consigli
 from .gusti import Gusti, GustiError
 from .yamtrack import Yamtrack, YamtrackError
 from .plex import Plex, PlexError
@@ -213,7 +213,7 @@ def _find(item_id: str) -> dict | None:
 @app.get("/api/servizi")
 def get_servizi():
     return {"radarr": radarr.configured, "sonarr": sonarr.configured, "plex": plex.configured,
-            "yamtrack": yamtrack.configured, "ai": consigli.configured}
+            "yamtrack": yamtrack.configured, "ai": consigli.configured, "visti": bool(_visti_sources())}
 
 
 @app.get("/api/plex")
@@ -378,22 +378,64 @@ def put_gusto(item_id: str, body: Gusto):
         raise HTTPException(400, str(e)) from e
 
 
+VISTI_SOURCES = ("yamtrack", "plex")
+
+
+def _visti_sources() -> list[str]:
+    """Da dove leggere i titoli gia' visti: quelle scelte nel menu admin (di base tutte) e collegate."""
+    chosen = admin.data.get("visti_fonti")
+    chosen = VISTI_SOURCES if chosen is None else chosen
+    on = {"yamtrack": yamtrack.configured, "plex": plex.configured}
+    return [s for s in VISTI_SOURCES if s in chosen and on[s]]
+
+
+def plex_watched(idx: dict) -> dict[str, dict]:
+    """I film visti e le serie iniziate su Plex (con il voto dato in Plex, da 0 a 10)."""
+    out: dict[str, dict] = {}
+    for kind in ("movie", "tv"):
+        for tmdb_id, e in idx.get(kind, {}).items():
+            if kind == "movie":
+                seen, stato = bool(e.get("visti")), "Completed"
+            else:
+                viewed, total = e.get("visti") or 0, e.get("episodi") or 0
+                seen, stato = viewed > 0, ("Completed" if total and viewed >= total else "In progress")
+            voto = e.get("voto")
+            if seen or voto is not None:
+                out[f"{kind}-{tmdb_id}"] = {"titolo": e.get("titolo") or "", "stato": stato,
+                                            "voto": float(voto) if voto is not None else None, "fonti": ["plex"]}
+    return out
+
+
 async def _visti() -> dict[str, dict]:
-    try:
-        return await yamtrack.watched()
-    except YamtrackError:
-        return {}
+    """Titoli gia' visti, da Yamtrack e/o Plex. Se un titolo e' in entrambi vale lo stato di Yamtrack."""
+    sources = _visti_sources()
+    out: dict[str, dict] = {}
+    if "plex" in sources:
+        out = plex_watched(await _safe(plex.index(), {"movie": {}, "tv": {}}))
+    if "yamtrack" in sources:
+        try:
+            yam = await yamtrack.watched()
+        except YamtrackError:
+            yam = {}
+        for key, v in yam.items():
+            other = out.get(key)
+            out[key] = v | {"fonti": ["yamtrack"]}
+            if other:
+                out[key] |= {"voto": v["voto"] if v.get("voto") is not None else other["voto"],
+                             "fonti": ["yamtrack", "plex"]}
+    return out
 
 
 @app.get("/api/visti")
 async def get_visti():
-    """I titoli gia' presenti su Yamtrack."""
+    """I titoli gia' visti, da Yamtrack e/o Plex."""
     titoli = await _visti()
-    return {"configurato": yamtrack.configured, "errore": yamtrack.error, "titoli": titoli}
+    return {"fonti": _visti_sources(), "errore": yamtrack.error if "yamtrack" in _visti_sources() else None,
+            "titoli": titoli}
 
 
 def _has_tastes() -> bool:
-    return bool(gusti.items) or (consigli.configured and yamtrack.configured)
+    return bool(gusti.items) or (consigli.configured and bool(_visti_sources()))
 
 
 async def _generate() -> None:
@@ -411,7 +453,8 @@ def _suggeriti_state() -> dict:
     d = consigli.data
     return {"titoli": d.get("titoli", []), "generato": d.get("generato"), "fonte": d.get("fonte"),
             "errore": d.get("errore"), "in_corso": consigli.running, "ai": consigli.configured,
-            "yamtrack": yamtrack.configured, "gusti": len(gusti.items),
+            "yamtrack": yamtrack.configured, "visti": _visti_sources(), "modello": d.get("modello"),
+            "gusti": len(gusti.items),
             "da_aggiornare": bool(d.get("generato")) and d.get("gusti") != gusti.modified}
 
 
@@ -593,20 +636,41 @@ def _mask(key: str) -> str:
     return f"{key[:7]}••••{key[-4:]}" if len(key) > 14 else ("••••" if key else "")
 
 
+def _ai_conf(provider: str) -> dict:
+    """Chiave, modello e indirizzo di un servizio AI: il menu admin prevale sulle variabili d'ambiente."""
+    env_model = settings.ai_model if settings.ai_provider == provider else ""
+    if provider == "openai":
+        env_key = settings.openai_api_key
+        key = admin.data.get("openai_chiave") or env_key
+        return {"chiave": key, "da_env": bool(env_key) and key == env_key,
+                "modello": admin.data.get("openai_modello") or env_model,
+                "url": (admin.data.get("openai_url") or settings.openai_base_url or DEFAULT_OPENAI_URL).rstrip("/")}
+    env_key = settings.anthropic_api_key
+    key = admin.data.get("ai_chiave") or env_key
+    return {"chiave": key, "da_env": bool(env_key) and key == env_key,
+            "modello": admin.data.get("ai_modello") or env_model or DEFAULT_MODEL, "url": None}
+
+
 def apply_ai_settings() -> None:
-    """Chiave e modello del menu admin prevalgono su ANTHROPIC_API_KEY e AI_MODEL."""
-    consigli.api_key = admin.data.get("ai_chiave") or settings.anthropic_api_key
-    consigli.model = admin.data.get("ai_modello") or settings.ai_model or DEFAULT_MODEL
+    provider = admin.data.get("ai_provider") or settings.ai_provider
+    consigli.provider = provider if provider in PROVIDERS else "anthropic"
+    conf = _ai_conf(consigli.provider)
+    consigli.api_key, consigli.model = conf["chiave"], conf["modello"]
+    if conf["url"]:
+        consigli.base_url = conf["url"]
 
 
 apply_ai_settings()
 
 
 def _ai_state() -> dict:
-    key = consigli.api_key
-    return {"configurata": bool(key), "da_env": bool(settings.anthropic_api_key) and key == settings.anthropic_api_key,
-            "chiave": _mask(key), "modello": consigli.model, "modelli": MODELS,
-            "errore": consigli.data.get("errore")}
+    services = {}
+    for p in PROVIDERS:
+        c = _ai_conf(p)
+        services[p] = {"configurata": bool(c["chiave"]), "da_env": c["da_env"], "chiave": _mask(c["chiave"]),
+                       "modello": c["modello"], "url": c["url"]}
+    return {"servizio": consigli.provider, "attivo": consigli.configured, "modelli": MODELS,
+            "url_predefinito": DEFAULT_OPENAI_URL, "errore": consigli.data.get("errore")} | services
 
 
 @app.get("/api/admin/ai")
@@ -615,25 +679,71 @@ def get_admin_ai(_: str = Depends(require_admin)):
 
 
 class AiImpostazioni(BaseModel):
-    chiave: str | None = None   # None = lascia quella attuale, "" = rimuovi
+    servizio: str | None = None  # "anthropic" o "openai"; None = quello attuale
+    chiave: str | None = None    # None = lascia quella attuale, "" = rimuovi
     modello: str | None = None
+    url: str | None = None       # solo per le API compatibili OpenAI
 
 
 @app.put("/api/admin/ai")
 async def put_admin_ai(body: AiImpostazioni, _: str = Depends(require_admin)):
-    key = consigli.api_key if body.chiave is None else body.chiave.strip()
-    model = (body.modello or consigli.model).strip()
+    provider = body.servizio or consigli.provider
+    if provider not in PROVIDERS:
+        raise HTTPException(400, "Servizio AI sconosciuto.")
+    current = _ai_conf(provider)
+    key = current["chiave"] if body.chiave is None else body.chiave.strip()
+    model = (current["modello"] if body.modello is None else body.modello).strip()
+    url = (body.url or current["url"] or "").strip().rstrip("/") or None
+    if url and not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "L'indirizzo deve iniziare con http:// o https://")
     if key:
         try:
-            await consigli.verify(key, model)
+            await consigli.verify(key, model, provider, url)
         except AiError as e:
             raise HTTPException(400, str(e)) from e
+    prefix = "ai" if provider == "anthropic" else "openai"
     if body.chiave is not None:
-        admin.set_value("ai_chiave", key)
-    admin.set_value("ai_modello", model)
+        admin.set_value(f"{prefix}_chiave", key)
+    admin.set_value(f"{prefix}_modello", model)
+    if provider == "openai" and body.url is not None:
+        admin.set_value("openai_url", url or "")
+    admin.set_value("ai_provider", provider)
     apply_ai_settings()
     consigli.data["errore"] = None
     return _ai_state()
+
+
+class ElencoModelli(BaseModel):
+    url: str | None = None
+    chiave: str | None = None
+
+
+@app.post("/api/admin/ai/modelli")
+async def post_admin_ai_models(body: ElencoModelli, _: str = Depends(require_admin)):
+    """I modelli offerti da un servizio compatibile OpenAI, per sceglierli dal menu."""
+    conf = _ai_conf("openai")
+    try:
+        return {"modelli": await consigli.list_models(body.chiave or conf["chiave"], body.url or conf["url"])}
+    except AiError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+class FontiVisti(BaseModel):
+    fonti: list[str]
+
+
+@app.get("/api/admin/visti")
+async def get_admin_visti(_: str = Depends(require_admin)):
+    chosen = admin.data.get("visti_fonti")
+    return {"fonti": list(VISTI_SOURCES) if chosen is None else chosen, "attive": _visti_sources(),
+            "collegate": {"yamtrack": yamtrack.configured, "plex": plex.configured}}
+
+
+@app.put("/api/admin/visti")
+async def put_admin_visti(body: FontiVisti, _: str = Depends(require_admin)):
+    admin.set_value("visti_fonti", [s for s in VISTI_SOURCES if s in body.fonti])
+    titoli = await _visti()
+    return await get_admin_visti(_) | {"titoli": len(titoli)}
 
 
 def apply_yamtrack_settings() -> None:

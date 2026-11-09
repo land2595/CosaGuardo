@@ -182,6 +182,8 @@ function ratingHtml(i) {
   return i.rating ? `<span class="rating" title="Voto TMDB">★ ${fmtVote(i.rating)}</span>` : "";
 }
 
+function fmtScore(n) { return Number(n).toLocaleString("it-IT", { maximumFractionDigits: 1 }); }
+
 function fmtVote(n) { return Number(n).toLocaleString("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }); }
 
 // Cuore e stelle che hai dato, nell'angolo della locandina
@@ -195,7 +197,9 @@ const SEEN_LABELS = { Completed: "Visto", "In progress": "Lo stai guardando", Pl
 
 function seenHtml(i) {
   const v = state.visti[i.id];
-  return v ? `<span class="seen ${v.stato === "Completed" ? "done" : ""}">${esc(SEEN_LABELS[v.stato] || "Su Yamtrack")}</span>` : "";
+  if (!v) return "";
+  const from = (v.fonti || []).map((f) => VISTI_NAMES[f]).join(" e ");
+  return `<span class="seen ${v.stato === "Completed" ? "done" : ""}" title="${esc(from ? `Da ${from}` : "")}">${esc(SEEN_LABELS[v.stato] || "Visto")}</span>`;
 }
 
 // Voto mostrato in "I migliori": Tomatometer se c'e', altrimenti IMDb (o TMDB)
@@ -734,7 +738,7 @@ async function loadServizi() {
   document.querySelector('.tab[data-view="richieste"]').hidden = !any;
   if (!any && state.view === "richieste") setView("novita");
   if (state.servizi.plex) loadPlex();
-  if (state.servizi.yamtrack) loadVisti();
+  if (state.servizi.visti) loadVisti();
 }
 
 async function loadPlex() {
@@ -934,7 +938,8 @@ function renderTaste(i) {
   const seen = state.visti[i.id];
   $("#d-seen").hidden = !seen;
   if (seen) {
-    $("#d-seen").textContent = `Yamtrack: ${SEEN_LABELS[seen.stato] || seen.stato}${seen.voto != null ? ` · voto ${seen.voto}/10` : ""}`;
+    const from = (seen.fonti || []).map((f) => VISTI_NAMES[f]).join(" e ");
+    $("#d-seen").textContent = `${from ? `${from}: ` : ""}${SEEN_LABELS[seen.stato] || seen.stato}${seen.voto != null ? ` · voto ${fmtScore(seen.voto)}/10` : ""}`;
   }
 }
 
@@ -1026,14 +1031,15 @@ function forYouBarHtml(sg) {
   const when = sg.generato
     ? new Date(sg.generato).toLocaleString("it-IT", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
     : "";
-  const by = sg.fonte === "ai" ? "Scelti da Claude" : "Consigliati da TMDB";
+  const by = sg.fonte === "ai" ? `Scelti da ${sg.modello || "Claude"}` : "Consigliati da TMDB";
+  const seenFrom = (sg.visti || []).map((f) => VISTI_NAMES[f]).join(" e ");
   const status = sg.in_corso
-    ? `<span class="dot busy"></span> ${sg.ai ? "Claude sta scegliendo i titoli per te…" : "Cerco titoli simili a quelli che ti piacciono…"}`
-    : sg.generato ? `${by} in base a ${plural(sg.gusti, "giudizio", "giudizi")}${sg.yamtrack ? " e a quello che hai visto su Yamtrack" : ""} · ${esc(when)}` : "";
-  const btn = !sg.in_corso && (sg.gusti || sg.yamtrack)
+    ? `<span class="dot busy"></span> ${sg.ai ? "L'AI sta scegliendo i titoli per te…" : "Cerco titoli simili a quelli che ti piacciono…"}`
+    : sg.generato ? `${esc(by)} in base a ${plural(sg.gusti, "giudizio", "giudizi")}${seenFrom ? ` e a quello che hai visto su ${esc(seenFrom)}` : ""} · ${esc(when)}` : "";
+  const btn = !sg.in_corso && (sg.gusti || (sg.ai && sg.visti?.length))
     ? `<button class="btn-request ${sg.da_aggiornare ? "hot" : ""}" id="sugg-refresh" type="button">↻ ${sg.da_aggiornare ? "Aggiorna con i nuovi giudizi" : "Nuovi suggerimenti"}</button>` : "";
   const hint = !sg.ai
-    ? `<p class="note">Per suggerimenti davvero su misura, che tengano conto delle tue note e dei film di tutti gli ultimi 50 anni, aggiungi una <b>chiave API di Anthropic</b> nel menu impostazioni (l'ingranaggio in alto). Intanto uso i titoli consigliati da TMDB per quelli che ti sono piaciuti.</p>` : "";
+    ? `<p class="note">Per suggerimenti davvero su misura, che tengano conto delle tue note e dei film di tutti gli ultimi 50 anni, aggiungi una <b>chiave API</b> (Claude, OpenRouter o un altro servizio compatibile OpenAI) nel menu impostazioni (l'ingranaggio in alto). Intanto uso i titoli consigliati da TMDB per quelli che ti sono piaciuti.</p>` : "";
   return `${hint}<div class="for-you-bar"><span class="for-you-status">${status}</span>${btn}</div>
     ${sg.errore ? `<p class="note err">${esc(sg.errore)}</p>` : ""}`;
 }
@@ -1046,7 +1052,7 @@ function renderForYou(items) {
     return;
   }
   const mine = filtered("preferiti").sort((a, b) => (b.voto ?? -1) - (a.voto ?? -1) || (b.mi_piace ? 1 : 0) - (a.mi_piace ? 1 : 0));
-  if (!sg.gusti && !sg.yamtrack && !items.length) {
+  if (!sg.gusti && !(sg.ai && sg.visti?.length) && !items.length) {
     content.innerHTML = `<div class="req-empty"><h3>Dimmi cosa ti piace</h3>
       <p>Apri un film o una serie e premi <b>♥ Mi piace</b>, dai un voto da 0 a 5 stelle e scrivi nelle note cosa ti è piaciuto.<br>
       Qui troverai i titoli scelti per te, anche dei decenni passati.</p></div>`;
@@ -1291,36 +1297,80 @@ $("#a-omdb").addEventListener("click", (e) => {
 });
 
 
-// Suggerimenti con l'AI (Claude)
+// Suggerimenti con l'AI: Claude oppure un servizio con API compatibile OpenAI (OpenRouter...)
+const AI_NAMES = { anthropic: "Claude", openai: "OpenRouter / OpenAI" };
+
 function aiHtml(o) {
-  const pill = !o.configurata ? "Non collegato" : o.errore ? "Errore" : "Collegato";
-  const where = o.da_env ? `La chiave arriva da <code>ANTHROPIC_API_KEY</code>; se ne inserisci una qui, vale questa.` : "";
-  const models = o.modelli.some((m) => m.id === o.modello) ? o.modelli : [...o.modelli, { id: o.modello, nome: o.modello }];
-  return `<div class="a-sec-head"><h3>Suggeriti per te · AI</h3><span class="a-pill ${o.configurata && !o.errore ? "on" : ""}">${pill}</span></div>
-    <p class="a-note">Con una chiave API di Anthropic i suggerimenti li sceglie Claude, leggendo i tuoi mi piace, i voti e le note
-      (e i titoli già visti su Yamtrack), tra film e serie degli ultimi 50 anni. Crea la chiave su
-      <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">platform.claude.com</a> (servono crediti prepagati:
-      ogni aggiornamento dei suggerimenti costa pochi centesimi). Senza chiave si usano i titoli consigliati da TMDB. ${where}</p>
-    ${o.errore ? `<p class="a-note err">${esc(o.errore)}</p>` : ""}
-    ${o.configurata ? `<p class="a-note">Chiave attuale: <code>${esc(o.chiave)}</code></p>` : ""}
-    <div class="a-grid">
-      <label class="a-field"><span class="ticket-label">Modello</span>
-        <select id="a-ai-model">${models.map((m) => `<option value="${esc(m.id)}"${m.id === o.modello ? " selected" : ""}>${esc(m.nome)}</option>`).join("")}</select></label>
-    </div>
+  const sel = admin.aiTab || o.servizio;
+  const c = o[sel];
+  const active = sel === o.servizio;
+  const pill = !o.attivo ? "Non collegato" : o.errore ? "Errore" : `Attivo: ${AI_NAMES[o.servizio]}`;
+  const envName = sel === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+  const intro = `<p class="a-note">I suggerimenti li sceglie un modello AI leggendo i tuoi mi piace, i voti e le note (e i titoli già visti),
+      tra film e serie degli ultimi 50 anni. Ogni aggiornamento è una sola richiesta e costa pochi centesimi. Senza chiave si usano i titoli consigliati da TMDB.</p>`;
+  const tabs = `<div class="seg a-seg" id="a-ai-tabs">${Object.entries(AI_NAMES).map(([k, n]) =>
+    `<button type="button" data-p="${k}" class="${k === sel ? "active" : ""}">${esc(n)}${k === o.servizio && o.attivo ? " ✓" : ""}</button>`).join("")}</div>`;
+  let fields;
+  if (sel === "anthropic") {
+    const models = o.modelli.some((m) => m.id === c.modello) ? o.modelli : [...o.modelli, { id: c.modello, nome: c.modello }];
+    fields = `<p class="a-note">Crea la chiave su <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">platform.claude.com</a> (servono crediti prepagati).</p>
+      <div class="a-grid">
+        <label class="a-field"><span class="ticket-label">Modello</span>
+          <select id="a-ai-model">${models.map((m) => `<option value="${esc(m.id)}"${m.id === c.modello ? " selected" : ""}>${esc(m.nome)}</option>`).join("")}</select></label>
+      </div>`;
+  } else {
+    fields = `<p class="a-note">Funziona con qualsiasi servizio che offre l'API <code>/chat/completions</code> di OpenAI: per esempio
+        <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">OpenRouter</a> (un'unica chiave per i modelli di OpenAI, Google, Anthropic, Meta…),
+        OpenAI (<code>https://api.openai.com/v1</code>) o un server locale come Ollama (<code>http://IP:11434/v1</code>).</p>
+      <div class="a-grid">
+        <label class="a-field"><span class="ticket-label">Indirizzo dell'API</span>
+          <input type="url" id="a-ai-url" value="${esc(c.url || o.url_predefinito)}" autocomplete="off" spellcheck="false"></label>
+        <label class="a-field"><span class="ticket-label">Modello</span>
+          <input type="text" id="a-ai-model" list="a-ai-models" value="${esc(c.modello || "")}" placeholder="Scrivi o scegli dall'elenco" autocomplete="off" spellcheck="false">
+          <datalist id="a-ai-models"></datalist></label>
+      </div>
+      <button type="button" class="a-link" id="a-ai-list">Carica l'elenco dei modelli</button>`;
+  }
+  return `<div class="a-sec-head"><h3>Suggeriti per te · AI</h3><span class="a-pill ${o.attivo && !o.errore ? "on" : ""}">${esc(pill)}</span></div>
+    ${intro}${tabs}${fields}
+    ${o.errore && active ? `<p class="a-note err">${esc(o.errore)}</p>` : ""}
+    ${c.configurata ? `<p class="a-note">Chiave attuale: <code>${esc(c.chiave)}</code>${c.da_env ? ` (da <code>${envName}</code>; se ne inserisci una qui, vale questa)` : ""}</p>` : ""}
     <form class="a-newtag a-wide" id="a-ai-form">
-      <input type="password" id="a-ai-key" placeholder="${o.configurata ? "Nuova chiave (lascia vuoto per tenere quella attuale)" : "Chiave API (sk-ant-…)"}" aria-label="Chiave API di Anthropic" autocomplete="off" spellcheck="false">
-      <button type="submit" class="a-link">Salva</button>
-      ${o.configurata && !o.da_env ? `<button type="button" class="a-link" id="a-ai-remove">Rimuovi chiave</button>` : ""}
+      <input type="password" id="a-ai-key" placeholder="${c.configurata ? "Nuova chiave (lascia vuoto per tenere quella attuale)" : sel === "anthropic" ? "Chiave API (sk-ant-…)" : "Chiave API (es. sk-or-…)"}" aria-label="Chiave API" autocomplete="off" spellcheck="false">
+      <button type="submit" class="a-link">${active ? "Salva" : "Salva e usa questo servizio"}</button>
+      ${c.configurata && !c.da_env ? `<button type="button" class="a-link" id="a-ai-remove">Rimuovi chiave</button>` : ""}
     </form>
     <p class="a-msg" id="a-ai-msg" role="status"></p>`;
 }
 
 async function loadAi() {
   try {
-    $("#a-ai").innerHTML = aiHtml(await adminFetch("/api/admin/ai"));
+    admin.ai = await adminFetch("/api/admin/ai");
+    admin.aiTab = admin.ai.servizio;
+    renderAi();
   } catch (err) {
     if (err.status === 401) { setAdminToken(null); return showLock(true); }
     $("#a-ai").innerHTML = `<p class="a-note err">${esc(err.message)}</p>`;
+  }
+}
+
+function renderAi() {
+  $("#a-ai").innerHTML = aiHtml(admin.ai);
+  if (admin.aiTab === "openai" && admin.ai.openai.configurata) loadAiModels(true);
+}
+
+async function loadAiModels(quiet = false) {
+  const url = $("#a-ai-url")?.value.trim();
+  if (!url) return;
+  if (!quiet) adminMsg("#a-ai-msg", "Leggo i modelli disponibili…");
+  try {
+    const key = $("#a-ai-key").value.trim();
+    const r = await adminFetch("/api/admin/ai/modelli", { method: "POST", body: JSON.stringify({ url, ...(key ? { chiave: key } : {}) }) });
+    $("#a-ai-models").innerHTML = r.modelli.map((m) => `<option value="${esc(m)}"></option>`).join("");
+    if (!quiet) adminMsg("#a-ai-msg", `${plural(r.modelli.length, "modello disponibile", "modelli disponibili")}: scrivi nel campo Modello per cercarlo.`, false);
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    if (!quiet) adminMsg("#a-ai-msg", err.message, true);
   }
 }
 
@@ -1328,9 +1378,13 @@ async function saveAi(body) {
   adminMsg("#a-ai-msg", "Verifico chiave e modello…");
   try {
     const o = await adminFetch("/api/admin/ai", { method: "PUT", body: JSON.stringify(body) });
-    $("#a-ai").innerHTML = aiHtml(o);
-    adminMsg("#a-ai-msg", body.chiave === "" ? "Chiave rimossa." : "Salvato. I prossimi suggerimenti li sceglie Claude.", false);
-    state.servizi.ai = o.configurata;
+    admin.ai = o;
+    admin.aiTab = o.servizio;
+    renderAi();
+    adminMsg("#a-ai-msg", body.chiave === "" ? "Chiave rimossa."
+      : o.attivo ? `Salvato. I prossimi suggerimenti li sceglie ${o.servizio === "anthropic" ? "Claude" : o.openai.modello}.`
+        : "Salvato. Manca la chiave: intanto si usano i consigliati di TMDB.", false);
+    state.servizi.ai = o.attivo;
     state.suggeriti = null;
     if (state.view === "per_te") loadSuggeriti();
   } catch (err) {
@@ -1342,10 +1396,69 @@ async function saveAi(body) {
 $("#a-ai").addEventListener("submit", (e) => {
   e.preventDefault();
   const key = $("#a-ai-key").value.trim();
-  saveAi({ modello: $("#a-ai-model").value, ...(key ? { chiave: key } : {}) });
+  const body = { servizio: admin.aiTab, modello: $("#a-ai-model").value.trim(), ...(key ? { chiave: key } : {}) };
+  if (admin.aiTab === "openai") {
+    body.url = $("#a-ai-url").value.trim();
+    if (!body.modello) return adminMsg("#a-ai-msg", "Scegli il modello da usare.", true);
+  }
+  saveAi(body);
 });
 $("#a-ai").addEventListener("click", (e) => {
-  if (e.target.id === "a-ai-remove") saveAi({ chiave: "" });
+  if (e.target.id === "a-ai-remove") saveAi({ servizio: admin.aiTab, chiave: "" });
+  if (e.target.id === "a-ai-list") loadAiModels();
+  const tab = e.target.closest("#a-ai-tabs button[data-p]");
+  if (tab && tab.dataset.p !== admin.aiTab) {
+    admin.aiTab = tab.dataset.p;
+    renderAi();
+  }
+});
+
+// Da dove arrivano i titoli gia' visti
+const VISTI_NAMES = { yamtrack: "Yamtrack", plex: "Plex" };
+
+function vistiHtml(v) {
+  const rows = Object.entries(VISTI_NAMES).map(([k, n]) => {
+    const linked = v.collegate[k];
+    const on = linked && v.fonti.includes(k);
+    return `<button type="button" class="a-tag${on ? " on" : ""}" data-src="${k}" aria-pressed="${on}" ${linked ? "" : "disabled"}
+      title="${linked ? "" : `${n} non è collegato`}"><i aria-hidden="true">✓</i>${esc(n)}${linked ? "" : " · non collegato"}</button>`;
+  }).join("");
+  return `<div class="a-sec-head"><h3>Già visti</h3><span class="a-pill ${v.attive.length ? "on" : ""}">${
+    v.attive.length ? esc(v.attive.map((k) => VISTI_NAMES[k]).join(" + ")) : "Nessuna fonte"}</span></div>
+    <p class="a-note">Da dove leggere i film e le serie che hai già visto: vengono segnati sulle locandine, non ti vengono suggeriti
+      e i tuoi voti (da 0 a 10) aiutano l'AI a capire i tuoi gusti. Puoi usarne una sola o tutte e due: se un titolo è in entrambe, vale Yamtrack.
+      Da Plex si leggono i titoli guardati dall'account del token e i voti dati in Plex.</p>
+    <div class="a-tags" id="a-visti-tags">${rows}</div>
+    <p class="a-msg" id="a-visti-msg" role="status"></p>`;
+}
+
+async function loadVistiAdmin() {
+  try {
+    admin.visti = await adminFetch("/api/admin/visti");
+    $("#a-visti").innerHTML = vistiHtml(admin.visti);
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    $("#a-visti").innerHTML = `<p class="a-note err">${esc(err.message)}</p>`;
+  }
+}
+
+$("#a-visti").addEventListener("click", async (e) => {
+  const b = e.target.closest(".a-tag[data-src]");
+  if (!b || b.disabled) return;
+  const fonti = new Set(admin.visti.fonti);
+  fonti.has(b.dataset.src) ? fonti.delete(b.dataset.src) : fonti.add(b.dataset.src);
+  try {
+    const r = await adminFetch("/api/admin/visti", { method: "PUT", body: JSON.stringify({ fonti: [...fonti] }) });
+    admin.visti = r;
+    $("#a-visti").innerHTML = vistiHtml(r);
+    adminMsg("#a-visti-msg", r.attive.length ? `Salvato: ${plural(r.titoli, "titolo visto", "titoli visti")}.` : "Salvato: nessun titolo segnato come visto.", false);
+    state.servizi.visti = r.attive.length > 0;
+    state.visti = {};
+    if (state.servizi.visti) loadVisti(); else if (state.view !== "richieste") render();
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    adminMsg("#a-visti-msg", err.message, true);
+  }
 });
 
 // Yamtrack
@@ -1391,7 +1504,9 @@ async function saveYamtrack(body) {
     adminMsg("#a-yam-msg", y.configurato ? `Collegato: ${plural(y.titoli || 0, "titolo letto", "titoli letti")}.` : "Yamtrack scollegato.", false);
     state.servizi.yamtrack = y.configurato;
     state.visti = {};
-    if (y.configurato) loadVisti(); else render();
+    await loadVistiAdmin();
+    state.servizi.visti = (admin.visti?.attive || []).length > 0;
+    if (state.servizi.visti) loadVisti(); else render();
   } catch (err) {
     if (err.status === 401) { setAdminToken(null); return showLock(true); }
     adminMsg("#a-yam-msg", err.message, true);
@@ -1416,6 +1531,7 @@ async function showPanel() {
   loadOmdb();
   loadAi();
   loadYamtrack();
+  loadVistiAdmin();
   try {
     admin.conf = await adminFetch("/api/admin/impostazioni");
   } catch (err) {

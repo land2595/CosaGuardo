@@ -64,7 +64,7 @@ def test_trailer_prefers_italian(services):
 
 def test_request_movie_goes_to_radarr(services):
     assert services.get("/api/servizi").json() == {"radarr": True, "sonarr": True, "plex": True,
-                                                   "yamtrack": False, "ai": False}
+                                                   "yamtrack": False, "ai": False, "visti": True}
     assert services.get("/api/richieste/movie-1001").json()["stato"] == "assente"
 
     r = services.post("/api/richieste", json={"id": "movie-1001"})
