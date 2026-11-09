@@ -5,6 +5,7 @@ const state = {
   tipo: "all",
   categoria: "",
   periodo: localGet("periodo") || "n5",
+  bestKids: localGet("bestKids") === "1",
   q: "",
   platforms: new Set(JSON.parse(localGet("platforms") || "[]")),
   data: null,
@@ -19,6 +20,8 @@ const state = {
   lista: ["watchlist", "richieste", "ignorati"].includes(localGet("lista")) ? localGet("lista") : "watchlist",
   visti: {},
   suggeriti: null,
+  extra: new Map(),
+  person: null,
 };
 
 const $ = (s) => document.querySelector(s);
@@ -110,6 +113,7 @@ function filtered(view = state.view, skip = "") {
     (skip === "platforms" || !state.platforms.size || (i.platforms || []).some((p) => state.platforms.has(p))) &&
     (skip === "categoria" || !state.categoria || (i.categorie || []).includes(state.categoria)) &&
     (view !== "migliori" || inPeriod(i)) &&
+    (view !== "migliori" || skip === "kids" || state.bestKids || !i.bambini) &&
     (!q || (i.title || "").toLowerCase().includes(q) || (i.original_title || "").toLowerCase().includes(q))
   );
 }
@@ -318,8 +322,11 @@ function renderPeriods() {
   if (el.hidden) return;
   const opts = periodOptions();
   if (!opts.some((o) => o.id === state.periodo)) state.periodo = "n5";
+  const kids = filtered("migliori", "kids").filter((i) => i.bambini).length;
   el.innerHTML = `<span class="periods-label">Periodo</span>` + opts.map((o) =>
-    `<button class="period ${o.id === state.periodo ? "on" : ""} ${o.id.startsWith("n") ? "span" : ""}" data-p="${o.id}" aria-pressed="${o.id === state.periodo}">${esc(o.label)}</button>`).join("");
+    `<button class="period ${o.id === state.periodo ? "on" : ""} ${o.id.startsWith("n") ? "span" : ""}" data-p="${o.id}" aria-pressed="${o.id === state.periodo}">${esc(o.label)}</button>`).join("") +
+    `<button class="period kids ${state.bestKids ? "on" : ""}" data-kids aria-pressed="${state.bestKids}" title="Film d'animazione e per famiglie, serie per bambini">` +
+    `${state.bestKids ? "✓ Con" : "＋ Includi"} contenuti per bambini${kids ? ` <small>${kids}</small>` : ""}</button>`;
 }
 
 function renderFilters() {
@@ -444,7 +451,8 @@ function findItem(id) {
   // Prima la sezione aperta (es. in "I migliori" l'elemento ha il voto IMDb), poi le altre
   const d = state.data || {};
   const lists = [d[state.view], d.novita, d.tendenze, d.prossimamente, d.migliori, d.per_te, d.bambini,
-    [...state.gusti.values()], [...state.liste.watchlist.values()], [...state.liste.ignorati.values()], state.requests];
+    [...state.gusti.values()], [...state.liste.watchlist.values()], [...state.liste.ignorati.values()], state.requests,
+    [...state.extra.values()]];
   for (const list of lists) {
     const found = (list || []).find((x) => x.id === id);
     if (found) return found;
@@ -1010,11 +1018,16 @@ function openDetail(id) {
   if (i.poster) poster.src = i.poster;
   $("#d-badge").textContent = i.type === "movie" ? "Film" : i.badge || "Serie TV";
   $("#d-title").textContent = i.title;
+  renderGenresDetail(i.genres);
+  loadCast(i);
+  const back = $("#d-back");
+  back.hidden = !state.person?.back;
+  if (state.person?.back) back.textContent = `← Torna a ${state.person.nome}`;
+  if (state.person) state.person.back = false;
   const orig = i.original_title || "";
   $("#d-orig").textContent = orig.toLowerCase() !== (i.title || "").toLowerCase() ? orig : "";
   $("#d-meta").textContent = [
     i.date ? `Uscita ${fmtLong.format(toDate(i.date))}` : null,
-    (i.genres || []).join(", ") || null,
     i.runtime ? `${i.runtime} min` : null,
     i.seasons ? `${i.seasons} stagion${i.seasons === 1 ? "e" : "i"}` : null,
     i.rating && !i.voti ? `${i.score ? `${i.score.fonte} ` : ""}★ ${i.rating} (${(i.votes || 0).toLocaleString("it-IT")} voti)` : null,
@@ -1030,7 +1043,139 @@ function openDetail(id) {
     (i.watch_link ? `<a href="${esc(i.watch_link)}" target="_blank" rel="noopener">▶ Dove guardarlo</a>` : "") +
     (i.imdb_id ? `<a href="https://www.imdb.com/title/${esc(i.imdb_id)}/" target="_blank" rel="noopener">Scheda su IMDb</a>` : "") +
     `<a href="${esc(i.tmdb_url || `https://www.themoviedb.org/${i.type}/${i.tmdb_id}`)}" target="_blank" rel="noopener">Scheda completa su TMDB</a>`;
-  $("#detail").showModal();
+  if (!dlg.open) dlg.showModal();
+  dlg.scrollTop = 0;
+}
+
+// ------------------------------------------- generi e attori nella scheda
+
+function renderGenresDetail(genres) {
+  $("#d-genres").innerHTML = (genres || []).map((g) => `<span class="d-genre">${esc(g)}</span>`).join("");
+}
+
+const schedaCache = new Map();
+
+function initials(name) {
+  return (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+}
+
+function actorHtml(c) {
+  const face = c.foto
+    ? `<img class="face" src="${esc(c.foto)}" alt="" loading="lazy">`
+    : `<span class="face none" aria-hidden="true">${esc(initials(c.nome))}</span>`;
+  const role = [c.personaggio, c.episodi ? `${c.episodi} ep.` : ""].filter(Boolean).join(" · ");
+  return `<button type="button" class="actor" data-person="${c.id}" title="Film e serie con ${esc(c.nome)}">
+    ${face}<b>${esc(c.nome)}</b>${role ? `<small>${esc(role)}</small>` : ""}</button>`;
+}
+
+async function loadCast(i) {
+  const box = $("#d-cast");
+  const row = $("#d-cast-row");
+  box.hidden = false;
+  row.innerHTML = `<span class="cast-load">Carico gli attori…</span>`;
+  const key = `${i.type}/${i.tmdb_id}`;
+  if (!schedaCache.has(key)) {
+    schedaCache.set(key, fetch(`/api/scheda/${key}`).then((r) => r.ok ? r.json() : null).catch(() => null));
+  }
+  const sc = await schedaCache.get(key);
+  if (!sc) schedaCache.delete(key);
+  if ($("#detail").dataset.id !== i.id) return;
+  if (sc && !(i.genres || []).length && sc.generi?.length) renderGenresDetail(sc.generi);
+  box.hidden = !sc?.cast?.length;
+  row.innerHTML = (sc?.cast || []).map(actorHtml).join("");
+}
+
+// ------------------------------------------------- filmografia attore
+
+const personCache = new Map();
+
+function personTileHtml(t) {
+  const poster = t.poster
+    ? `<img src="${esc(t.poster)}" alt="" loading="lazy">`
+    : `<div class="noimg">${esc(t.title)}</div>`;
+  const role = [t.ruolo, t.episodi ? `${t.episodi} episod${t.episodi === 1 ? "io" : "i"}` : ""].filter(Boolean).join(" · ");
+  return `<button type="button" class="credit" data-kind="${t.type}" data-tmdb="${t.tmdb_id}">
+    <div class="cp">${poster}
+      <span class="kind ${t.type}">${t.type === "movie" ? "Film" : "Serie"}</span>
+      ${state.plex[t.type]?.has(t.tmdb_id) ? `<span class="on-plex">Su Plex</span>` : ""}
+    </div>
+    <b>${esc(t.title)}</b>
+    <small>${esc(t.year || "In arrivo")}${role ? ` · ${esc(role)}` : ""}</small>
+  </button>`;
+}
+
+function renderPersonGrid() {
+  const p = state.person;
+  if (!p?.titoli) return;
+  const counts = { all: p.titoli.length, movie: 0, tv: 0 };
+  for (const t of p.titoli) counts[t.type]++;
+  const tabs = [["all", "Tutto"], ["movie", "Film"], ["tv", "Serie TV"]].filter(([k]) => k === "all" || counts[k]);
+  $("#p-filter").innerHTML = tabs.map(([k, label]) =>
+    `<button class="genre ${p.filtro === k ? "on" : ""}" data-f="${k}" aria-pressed="${p.filtro === k}">${label}<small>${counts[k]}</small></button>`).join("");
+  const list = p.titoli.filter((t) => p.filtro === "all" || t.type === p.filtro);
+  $("#p-grid").innerHTML = list.length ? list.map(personTileHtml).join("")
+    : `<p class="cast-load">Nessun titolo trovato.</p>`;
+}
+
+async function openPerson(id) {
+  const dlg = $("#person");
+  dlg.dataset.id = id;
+  $("#p-name").textContent = "";
+  $("#p-meta").textContent = "";
+  $("#p-bio").textContent = "";
+  $("#p-bio-more").hidden = true;
+  $("#p-links").innerHTML = "";
+  $("#p-photo").hidden = true;
+  $("#p-filter").innerHTML = "";
+  $("#p-grid").innerHTML = `<p class="cast-load">Carico i film e le serie…</p>`;
+  if (!dlg.open) dlg.showModal();
+  dlg.scrollTop = 0;
+  if (!personCache.has(id)) {
+    personCache.set(id, fetch(`/api/persona/${id}`).then((r) => r.ok ? r.json() : null).catch(() => null));
+  }
+  const p = await personCache.get(id);
+  if (dlg.dataset.id !== String(id)) return;
+  if (!p) {
+    personCache.delete(id);
+    $("#p-grid").innerHTML = `<p class="cast-load">Non riesco a caricare questa persona. Riprova tra poco.</p>`;
+    return;
+  }
+  state.person = { ...p, filtro: "all", back: false };
+  $("#p-role").textContent = p.mestiere === "regia" ? "Regia e sceneggiatura"
+    : p.sesso === 1 ? "Attrice" : p.sesso === 2 ? "Attore" : "Interprete";
+  $("#p-name").textContent = p.nome;
+  const age = (from, to) => {
+    const a = toDate(from), b = to ? toDate(to) : new Date();
+    return b.getFullYear() - a.getFullYear() - (b < new Date(b.getFullYear(), a.getMonth(), a.getDate()) ? 1 : 0);
+  };
+  $("#p-meta").textContent = [
+    p.nascita ? `Nascita: ${fmtLong.format(toDate(p.nascita))}${p.morte ? "" : ` (${age(p.nascita)} anni)`}` : null,
+    p.luogo || null,
+    p.morte ? `Morte: ${fmtLong.format(toDate(p.morte))} (${age(p.nascita || p.morte, p.morte)} anni)` : null,
+  ].filter(Boolean).join("  ·  ");
+  const bio = $("#p-bio");
+  bio.textContent = p.biografia || "";
+  bio.classList.add("short");
+  $("#p-bio-more").hidden = (p.biografia || "").length < 320;
+  $("#p-photo").hidden = !p.foto;
+  if (p.foto) $("#p-photo").src = p.foto;
+  $("#p-links").innerHTML =
+    (p.imdb_id ? `<a href="https://www.imdb.com/name/${esc(p.imdb_id)}/" target="_blank" rel="noopener">Scheda su IMDb</a>` : "") +
+    `<a href="${esc(p.tmdb_url)}" target="_blank" rel="noopener">Scheda su TMDB</a>`;
+  renderPersonGrid();
+}
+
+async function openTitle(kind, tmdbId) {
+  const id = `${kind}-${tmdbId}`;
+  let i = findItem(id);
+  if (!i) {
+    i = await fetch(`/api/titolo/${kind}/${tmdbId}`).then((r) => r.ok ? r.json() : null).catch(() => null);
+    if (!i) return;
+    state.extra.set(i.id, i);
+  }
+  if (state.person) state.person.back = true;
+  $("#person").close();
+  openDetail(i.id);
 }
 
 // --------------------------------------------------- voti nella scheda
@@ -1892,6 +2037,14 @@ $("#genres").addEventListener("click", (e) => {
 $("#periods").addEventListener("click", (e) => {
   const b = e.target.closest(".period");
   if (!b) return;
+  if (b.matches("[data-kids]")) {
+    state.bestKids = !state.bestKids;
+    localSet("bestKids", state.bestKids ? "1" : "0");
+    renderFilters();
+    renderHero();
+    render();
+    return;
+  }
   state.periodo = b.dataset.p;
   localSet("periodo", state.periodo);
   renderFilters();
@@ -1966,6 +2119,22 @@ $("#d-request").addEventListener("click", () => {
   else sendRequest();
 });
 $("#d-more").addEventListener("click", openSeasons);
+$("#d-cast-row").addEventListener("click", (e) => {
+  const a = e.target.closest(".actor[data-person]");
+  if (a) openPerson(Number(a.dataset.person));
+});
+$("#d-back").addEventListener("click", () => { if (state.person) openPerson(state.person.id); });
+$("#person").addEventListener("click", (e) => {
+  if (e.target.matches("[data-close]") || e.target === e.currentTarget) { e.currentTarget.close(); return; }
+  const c = e.target.closest(".credit[data-kind]");
+  if (c) { openTitle(c.dataset.kind, Number(c.dataset.tmdb)); return; }
+  const f = e.target.closest("#p-filter [data-f]");
+  if (f && state.person) { state.person.filtro = f.dataset.f; renderPersonGrid(); }
+});
+$("#p-bio-more").addEventListener("click", (e) => {
+  $("#p-bio").classList.remove("short");
+  e.currentTarget.hidden = true;
+});
 
 setView(state.view);
 loadServizi();

@@ -106,6 +106,52 @@ OLD_MOVIES = {
 }
 RECOMMENDATIONS = {1001: [1201, 1002, 1202], 1002: [1202, 1001]}
 
+# Attori: 501 recita in film e serie, 502 solo in un film; 503 e' un regista
+PEOPLE = {
+    501: {"name": "Giulia Neri", "movies": [1001, 1002, 1201], "shows": [2001, 2106], "self_in": [2003]},
+    502: {"name": "Marco Bianchi", "movies": [1001], "shows": []},
+    503: {"name": "Paolo Registi", "movies": [], "shows": [], "directs": [1001, 1005], "dept": "Directing"},
+}
+
+
+def _cast(kind: str, tid: int) -> list[dict]:
+    out = []
+    for pid, p in PEOPLE.items():
+        if tid in p.get("movies" if kind == "movie" else "shows", []):
+            role = {"character": f"Ruolo {tid}"}
+            out.append({"id": pid, "name": p["name"], "profile_path": f"/a{pid}.svg", "order": len(out),
+                        **(role if kind == "movie" else {"roles": [role], "total_episode_count": 8})})
+    return out
+
+
+@app.get("/person/{pid}")
+def person(pid: int, language: str = "it-IT"):
+    if pid not in PEOPLE:
+        return Response('{"status_code":34}', status_code=404, media_type="application/json")
+    p = PEOPLE[pid]
+
+    def credit(kind, tid, **extra):
+        if kind == "movie":
+            m = MOVIES.get(tid) or OLD_MOVIES[tid]
+            base = {"title": m["title"], "release_date": m["date"], "genre_ids": [18]}
+        else:
+            sh = SHOWS[tid]
+            base = {"name": sh["title"], "first_air_date": sh["first"], "genre_ids": sh.get("genres", [18]),
+                    "episode_count": 8}
+        return {"id": tid, "media_type": kind, "poster_path": f"/p{tid}.svg", "vote_average": 7.2,
+                "vote_count": 500, "popularity": 10.0} | base | extra
+
+    cast = [credit("movie", m, character=f"Ruolo {m}") for m in p["movies"]]
+    cast += [credit("tv", t, character=f"Ruolo {t}") for t in p["shows"]]
+    cast += [credit("tv", t, character="Self") for t in p.get("self_in", [])]
+    if p["movies"]:
+        cast.append(credit("movie", p["movies"][0], character="Ruolo doppio"))  # stesso film due volte
+    crew = [credit("movie", m, job="Director") for m in p.get("directs", [])]
+    return {"id": pid, "name": p["name"], "profile_path": f"/a{pid}.svg", "birthday": "1980-05-04",
+            "place_of_birth": "Roma, Italia", "known_for_department": p.get("dept", "Acting"),
+            "biography": "" if language == "it-IT" and pid == 502 else f"Biografia di {p['name']} ({language}).",
+            "imdb_id": f"nm{pid:07d}", "combined_credits": {"cast": cast, "crew": crew}}
+
 
 def color(seed: str) -> tuple[str, str]:
     h = hashlib.md5(seed.encode()).hexdigest()
@@ -207,6 +253,7 @@ def movie(mid: int, language: str = "it-IT"):
             {"iso_3166_1": "US", "release_dates": [
                 {"type": 3, "release_date": m["date"] + "T00:00:00.000Z", "certification": KIDS_MOVIES.get(mid, "R")}]}]},
         "production_companies": [{"name": c} for c in m.get("companies", [])],
+        "credits": {"cast": _cast("movie", mid)},
     }
 
 
@@ -234,6 +281,7 @@ def tv(sid: int):
         "vote_average": round(r.uniform(6, 9), 1), "vote_count": r.randint(40, 4000),
         "popularity": r.uniform(10, 400),
         "watch/providers": _wp(s["providers"]),
+        "aggregate_credits": {"cast": _cast("tv", sid)},
     }
 
 

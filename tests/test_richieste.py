@@ -402,3 +402,47 @@ def test_delete_request_only_from_cosaguardo(services):
     assert [m["tmdbId"] for m in mock_arr.radarr.state.movies] == [1001]
     assert services.get("/api/richieste/movie-1001").json()["stato"] == "richiesto"
     assert services.delete("/api/richieste/movie-1001").status_code == 404
+
+
+def test_scheda_cast_and_genres(services):
+    film = services.get("/api/scheda/movie/1001").json()
+    assert film["generi"] and all(isinstance(g, str) for g in film["generi"])
+    assert [c["nome"] for c in film["cast"]] == ["Giulia Neri", "Marco Bianchi"]
+    assert film["cast"][0]["personaggio"] == "Ruolo 1001" and film["cast"][0]["foto"].endswith("/a501.svg")
+    serie = services.get("/api/scheda/tv/2001").json()
+    assert serie["cast"][0] == {"id": 501, "nome": "Giulia Neri", "personaggio": "Ruolo 2001",
+                                "foto": serie["cast"][0]["foto"], "episodi": 8}
+    assert services.get("/api/scheda/tv/2002").json()["cast"] == []
+
+
+def test_persona_films_and_series(services):
+    p = services.get("/api/persona/501").json()
+    assert p["nome"] == "Giulia Neri" and p["mestiere"] == "attore" and p["biografia"]
+    ids = [t["id"] for t in p["titoli"]]
+    assert {"movie-1001", "movie-1002", "movie-1201", "tv-2001"} <= set(ids)
+    assert len(ids) == len(set(ids)), "un titolo una volta sola"
+    assert "tv-2106" not in ids   # reality
+    assert "tv-2003" not in ids   # comparsa nel ruolo di se' stessa
+    assert next(t for t in p["titoli"] if t["id"] == "movie-1001")["ruolo"] == "Ruolo 1001 / Ruolo doppio"
+    dates = [t["date"] for t in p["titoli"]]
+    assert dates == sorted(dates, reverse=True)
+    # Biografia non tradotta: in inglese
+    assert "en-US" in services.get("/api/persona/502").json()["biografia"]
+    # Un regista: i film che ha diretto
+    reg = services.get("/api/persona/503").json()
+    assert reg["mestiere"] == "regia" and {t["id"] for t in reg["titoli"]} == {"movie-1001", "movie-1005"}
+    assert services.get("/api/persona/999").status_code == 404
+
+
+def test_titolo_from_filmography(services):
+    # Nel catalogo: lo stesso elemento; vecchio: scheda costruita al volo
+    assert services.get("/api/titolo/movie/1001").json()["id"] == "movie-1001"
+    old = services.get("/api/titolo/movie/1201").json()
+    assert old["title"] == "Il mare d'inverno" and old["year"] == "1986" and old["genres"]
+
+
+def test_migliori_marks_kids(services):
+    best = services.get("/api/catalogo").json()["migliori"]
+    assert all(isinstance(i["bambini"], bool) for i in best)
+    kids = {i["id"] for i in best if i["bambini"]}
+    assert kids and kids <= {"movie-1004", "movie-1010", "tv-2007"}

@@ -171,6 +171,48 @@ async def get_trailer(kind: str, tmdb_id: int):
         raise HTTPException(502, str(e)) from e
 
 
+# ------------------------------------------------------ cast e attori
+
+@app.get("/api/scheda/{kind}/{tmdb_id}")
+async def get_scheda(kind: str, tmdb_id: int):
+    """Generi e attori principali di un titolo."""
+    if kind not in ("movie", "tv"):
+        raise HTTPException(404)
+    try:
+        return await catalog.scheda(kind, tmdb_id)
+    except TMDBError as e:
+        raise HTTPException(502, str(e)) from e
+
+
+@app.get("/api/persona/{person_id}")
+async def get_persona(person_id: int):
+    """Un attore con tutti i suoi film e le sue serie."""
+    try:
+        p = await catalog.persona(person_id)
+    except TMDBError as e:
+        raise HTTPException(502, str(e)) from e
+    if not p:
+        raise HTTPException(404, "Persona non trovata.")
+    return p
+
+
+@app.get("/api/titolo/{kind}/{tmdb_id}")
+async def get_titolo(kind: str, tmdb_id: int):
+    """La scheda di un titolo qualsiasi (es. dalla filmografia di un attore)."""
+    if kind not in ("movie", "tv"):
+        raise HTTPException(404)
+    found = _find(f"{kind}-{tmdb_id}")
+    if found:
+        return found
+    try:
+        it = await catalog.item_for(kind, tmdb_id)
+    except TMDBError as e:
+        raise HTTPException(502, str(e)) from e
+    if not it:
+        raise HTTPException(404, "Titolo non trovato.")
+    return it
+
+
 # ---------------------------------------------------------------- richieste
 
 def _service(kind: str):
