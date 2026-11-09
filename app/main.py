@@ -455,12 +455,13 @@ def _suggeriti_state() -> dict:
             "errore": d.get("errore"), "in_corso": consigli.running, "ai": consigli.configured,
             "yamtrack": yamtrack.configured, "visti": _visti_sources(), "modello": d.get("modello"),
             "gusti": len(gusti.items),
-            "da_aggiornare": bool(d.get("generato")) and d.get("gusti") != gusti.modified}
+            "da_aggiornare": consigli.stale(gusti.modified)}
 
 
 @app.get("/api/suggeriti")
 async def get_suggeriti():
-    """"Suggeriti per te": se i gusti sono cambiati, i suggerimenti si ricalcolano in background."""
+    """"Suggeriti per te". Senza AI, se i gusti sono cambiati si ricalcolano da soli in background;
+    con l'AI mai: si aggiornano solo con il pulsante (POST /api/suggeriti/aggiorna)."""
     if consigli.needs_update(gusti.modified, _has_tastes()):
         _start_generation()
         return _suggeriti_state() | {"in_corso": True}
