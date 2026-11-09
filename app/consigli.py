@@ -35,7 +35,10 @@ MODELS = [
 ]
 # Modelli che accettano il ripiego automatico su un altro modello se la richiesta viene rifiutata
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
-HOW_MANY = 30
+HOW_MANY_FILMS = 100     # suggerimenti per ogni aggiornamento
+HOW_MANY_SERIES = 100
+HOW_MANY = HOW_MANY_FILMS + HOW_MANY_SERIES
+MAX_TOKENS = 64000       # 200 titoli con il motivo: risposta lunga, quindi in streaming
 YEARS = 50
 RETRY_SECONDS = 120   # dopo un errore non si riprova da soli prima di 2 minuti
 NOTE_WORDS = 20       # note suggerite dall'AI: brevissime
@@ -44,6 +47,8 @@ NOTE_HOW_MANY = 3
 SCHEMA = {
     "type": "object",
     "properties": {
+        # Prima la memoria: se la risposta venisse interrotta, si perdono solo gli ultimi titoli
+        "profilo": {"type": "string", "description": "La memoria dei gusti aggiornata, in punti brevi"},
         "suggerimenti": {
             "type": "array",
             "items": {
@@ -53,15 +58,14 @@ SCHEMA = {
                     "titolo_originale": {"type": "string"},
                     "anno": {"type": "integer", "description": "Anno di uscita (per le serie, del debutto)"},
                     "tipo": {"type": "string", "enum": ["film", "serie"]},
-                    "motivo": {"type": "string", "description": "Perche' piacera', in italiano, 1-2 frasi"},
+                    "motivo": {"type": "string", "description": "Perche' piacera', in italiano, una frase breve"},
                 },
                 "required": ["titolo", "titolo_originale", "anno", "tipo", "motivo"],
                 "additionalProperties": False,
             },
         },
-        "profilo": {"type": "string", "description": "La memoria dei gusti aggiornata, in punti brevi"},
     },
-    "required": ["suggerimenti", "profilo"],
+    "required": ["profilo", "suggerimenti"],
     "additionalProperties": False,
 }
 
@@ -123,7 +127,8 @@ def reactions(storico: list[dict], gusti: list[dict], visti: dict[str, dict],
     return out
 
 
-def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str], how_many: int = HOW_MANY,
+def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str],
+                 films: int = HOW_MANY_FILMS, series: int = HOW_MANY_SERIES,
                  watchlist: list[dict] | None = None, ignorati: list[dict] | None = None,
                  profilo: str = "", storico: list[dict] | None = None) -> str:
     """Il profilo dei gusti spiegato al modello."""
@@ -176,17 +181,19 @@ def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str]
         parts.append("Titoli che mi hai gia' suggerito (non riproporli, cerca altro): " + _names(storico[:400]))
 
     parts.append(
-        f"Suggeriscimi {how_many} film e serie TV che potrebbero piacermi davvero, scegliendo tra tutto cio' "
-        f"che e' uscito dal {first_year} a oggi, non solo le novita': al massimo un terzo degli ultimi 3 anni, "
-        "il resto distribuito nei decenni, con qualche perla meno conosciuta accanto ai classici. "
-        "Mescola film e serie in proporzione ai miei gusti. Non suggerire nessuno dei titoli elencati sopra "
-        "(ne' i loro sequel se ho dato un voto basso). "
+        f"Suggeriscimi {films} film e {series} serie TV (esattamente, tutti diversi) che potrebbero piacermi "
+        f"davvero, scegliendo tra tutto cio' che e' uscito dal {first_year} a oggi, non solo le novita': al massimo "
+        "un terzo degli ultimi 3 anni, il resto distribuito nei decenni, con molte perle meno conosciute e "
+        "titoli di tutto il mondo accanto ai classici. Prima tutti i film, poi tutte le serie. Non suggerire "
+        "nessuno dei titoli elencati sopra (ne' i loro sequel se ho dato un voto basso). "
         f"Se puoi, preferisci titoli disponibili in Italia su: {', '.join(platforms) or 'qualsiasi piattaforma'}. "
         "Per ogni titolo indica titolo italiano, titolo originale, anno esatto di uscita, tipo e il motivo "
-        "legato ai miei gusti (cita le mie note quando servono). Ordinali dal piu' adatto a me."
+        "in una frase breve legata ai miei gusti (cita le mie note quando servono). Ordina film e serie dal "
+        "piu' adatto a me."
     )
     parts.append(
-        "Infine riscrivi la memoria dei miei gusti nel campo «profilo», che userai la prossima volta. Regole:\n"
+        "Nel campo «profilo», che scrivi per primo, riscrivi la memoria dei miei gusti, che userai la prossima "
+        "volta. Regole:\n"
         "- Basala SOLO sui miei giudizi elencati sopra (mi piace, stelle e note) e sulle mie correzioni alla "
         "memoria. Non dedurre gusti da titoli visti senza giudizio, watchlist, liste, scartati o suggerimenti.\n"
         "- Come esempi puoi citare solo titoli che ho giudicato; mai altri titoli, nemmeno famosi. Non inventare: "
@@ -254,11 +261,44 @@ def clean_profile(text: str, gusti: list[dict]) -> str:
     return "\n".join(f"{k}: {'; '.join(v)}" for k, v in sections.items() if v)
 
 
-def _json_from_text(text: str, key: str = "suggerimenti") -> dict:
+def _salvage(text: str, key: str) -> dict | None:
+    """Da una risposta JSON interrotta a meta' recupera i titoli completi (e la memoria, se c'e')."""
+    m = re.search(r'"%s"\s*:\s*\[' % re.escape(key), text or "")
+    if not m:
+        return None
+    dec, pos, items = json.JSONDecoder(), m.end(), []
+    while True:
+        while pos < len(text) and text[pos] in " \t\r\n,":
+            pos += 1
+        try:
+            obj, pos = dec.raw_decode(text, pos)
+        except ValueError:
+            break
+        if isinstance(obj, dict):
+            items.append(obj)
+    if not items:
+        return None
+    out: dict = {key: items}
+    p = re.search(r'"profilo"\s*:\s*', text)
+    if p:
+        try:
+            out["profilo"], _ = dec.raw_decode(text, p.end())
+        except ValueError:
+            pass
+    return out
+
+
+def _json_from_text(text: str, key: str = "suggerimenti", partial: bool = False) -> dict:
     """L'oggetto JSON della risposta (anche dentro un blocco ```json), con la lista `key`."""
     text = (text or "").strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
+    if partial:
+        # Risposta interrotta per lunghezza: si tiene quello che e' arrivato intero
+        found = _salvage(text, key)
+        if found:
+            return found
+        raise AiError("Risposta troppo lunga, interrotta: riprova.")
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end < start:
         raise AiError("Risposta del modello non leggibile.")
@@ -333,7 +373,7 @@ class Consigli:
         return "Claude" if self.provider == "anthropic" else (self.model or "AI")
 
     def _client(self, key: str | None = None) -> anthropic.AsyncAnthropic:
-        return anthropic.AsyncAnthropic(api_key=key or self.api_key, timeout=300, max_retries=2)
+        return anthropic.AsyncAnthropic(api_key=key or self.api_key, timeout=1200, max_retries=2)
 
     # ------------------------------------------------------------- Claude
 
@@ -368,7 +408,8 @@ class Consigli:
         """Chiede i suggerimenti al modello scelto: {"suggerimenti": [...], "profilo": "..."}."""
         example = ('{"suggerimenti": [{"titolo": "...", "titolo_originale": "...", "anno": 1999, '
                    '"tipo": "film" o "serie", "motivo": "..."}], "profilo": "Ama: ...\\nNon ama: ..."}')
-        return await self._complete(SYSTEM, prompt, SCHEMA, "suggerimenti", example, max_tokens=16000, effort="medium")
+        return await self._complete(SYSTEM, prompt, SCHEMA, "suggerimenti", example, max_tokens=MAX_TOKENS,
+                                    effort="medium")
 
     async def note(self, item: dict, gusto: dict | None) -> list[str]:
         """Qualche nota brevissima (max 20 parole) sul perche' un titolo e' piaciuto: una sola richiesta."""
@@ -392,29 +433,33 @@ class Consigli:
         if self.model in FALLBACK_MODELS:
             # Se il modello rifiuta la richiesta, l'API la ripete su un altro modello
             extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+        params = dict(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+            output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
+            **extra,
+        )
         try:
             async with self._client() as client:
-                response = await client.beta.messages.create(
-                    model=self.model,
-                    max_tokens=max_tokens,
-                    system=system,
-                    messages=[{"role": "user", "content": prompt}],
-                    output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
-                    **extra,
-                )
+                if max_tokens > 16000:
+                    # Risposte lunghe (200 titoli): in streaming, cosi' non scadono i tempi della richiesta
+                    async with client.beta.messages.stream(**params) as stream:
+                        response = await stream.get_final_message()
+                else:
+                    response = await client.beta.messages.create(**params)
         except anthropic.AnthropicError as e:
             raise self._error(e) from e
         if response.stop_reason == "refusal":
             raise AiError("Il modello non ha risposto a questa richiesta.")
-        if response.stop_reason == "max_tokens":
-            raise AiError("Risposta troppo lunga, interrotta: riprova.")
         text = next((b.text for b in response.content if b.type == "text"), "")
-        return _json_from_text(text, key)
+        return _json_from_text(text, key, partial=response.stop_reason == "max_tokens")
 
     # ------------------------------------------- API compatibili con OpenAI
 
     def _http(self, key: str, base_url: str) -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(300, connect=15), headers={
+        return httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(1200, connect=15), headers={
             "Authorization": f"Bearer {key}",
             # OpenRouter mostra il nome dell'app nelle statistiche di utilizzo
             "HTTP-Referer": "https://github.com/land2595/CosaGuardo", "X-Title": "CosaGuardo",
@@ -489,14 +534,12 @@ class Consigli:
             choice = r.json()["choices"][0]
         except (ValueError, KeyError, IndexError, TypeError) as e:
             raise AiError("Risposta del servizio AI non leggibile.") from e
-        if choice.get("finish_reason") == "length":
-            raise AiError("Risposta troppo lunga, interrotta: riprova.")
         content = (choice.get("message") or {}).get("content")
         if isinstance(content, list):  # alcuni servizi restituiscono blocchi di testo
             content = "".join(c.get("text", "") for c in content if isinstance(c, dict))
         if not content:
             raise AiError("Il modello non ha risposto a questa richiesta.")
-        return _json_from_text(content, key)
+        return _json_from_text(content, key, partial=choice.get("finish_reason") == "length")
 
     # ------------------------------------------------------- generazione
 
@@ -592,7 +635,7 @@ class Consigli:
         """Senza AI: i titoli consigliati da TMDB per quelli che ti sono piaciuti di piu'."""
         liked = [g for g in gusti if g.get("mi_piace") or (g.get("voto") or 0) >= 4]
         liked.sort(key=lambda g: -(g.get("voto") or 3))
-        recs = await asyncio.gather(*(catalog.recommendations(g["type"], g["tmdb_id"]) for g in liked[:15]),
+        recs = await asyncio.gather(*(catalog.recommendations(g["type"], g["tmdb_id"]) for g in liked[:40]),
                                     return_exceptions=True)
         votes: Counter = Counter()
         source: dict[tuple, str] = {}
@@ -602,7 +645,9 @@ class Consigli:
             for rank, key in enumerate(lst[:20]):
                 votes[key] += (g.get("voto") or 3) * (20 - rank)
                 source.setdefault(key, g.get("title") or "")
-        best = [k for k, _ in votes.most_common() if f"{k[0]}-{k[1]}" not in exclude][:HOW_MANY]
+        ranked = [k for k, _ in votes.most_common() if f"{k[0]}-{k[1]}" not in exclude]
+        best = ([k for k in ranked if k[0] == "movie"][:HOW_MANY_FILMS] +
+                [k for k in ranked if k[0] == "tv"][:HOW_MANY_SERIES])
         items = await asyncio.gather(*(catalog.item_for(k, i) for k, i in best), return_exceptions=True)
         return [it | {"motivo": f"Perché ti è piaciuto «{source[k]}»."}
                 for k, it in zip(best, items) if isinstance(it, dict)]

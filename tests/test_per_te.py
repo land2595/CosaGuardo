@@ -239,24 +239,55 @@ def test_ask_sends_structured_request(tmp_path, monkeypatch):
         sent["url"] = str(request.url)
         sent["beta"] = request.headers.get("anthropic-beta")
         sent["body"] = json.loads(request.content)
-        text = json.dumps({"suggerimenti": [{"titolo": "Heat - La sfida", "titolo_originale": "Heat", "anno": 1995,
-                                             "tipo": "film", "motivo": "Tensione e personaggi ambigui."}]})
-        return httpx2.Response(200, json={
-            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
-            "content": [{"type": "text", "text": text}], "stop_reason": "end_turn", "stop_sequence": None,
-            "usage": {"input_tokens": 10, "output_tokens": 20}})
+        text = json.dumps({"profilo": "Ama: thriller", "suggerimenti": [
+            {"titolo": "Heat - La sfida", "titolo_originale": "Heat", "anno": 1995, "tipo": "film",
+             "motivo": "Tensione e personaggi ambigui."}]})
+        # Risposta lunga (200 titoli): arriva in streaming, e qui si interrompe per lunghezza
+        cut = text[:-2]
+        events = [
+            ("message_start", {"type": "message_start", "message": {
+                "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5", "content": [],
+                "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 1}}}),
+            ("content_block_start", {"type": "content_block_start", "index": 0,
+                                     "content_block": {"type": "text", "text": ""}}),
+            ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                     "delta": {"type": "text_delta", "text": cut[:30]}}),
+            ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                     "delta": {"type": "text_delta", "text": cut[30:]}}),
+            ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "max_tokens", "stop_sequence": None},
+                               "usage": {"output_tokens": 64000}}),
+            ("message_stop", {"type": "message_stop"}),
+        ]
+        sse = "".join(f"event: {e}\ndata: {json.dumps(d)}\n\n" for e, d in events)
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=sse.encode())
 
     c = Consigli(str(tmp_path), api_key="sk-ant-test")
     monkeypatch.setattr(c, "_client", lambda key=None: anthropic.AsyncAnthropic(
         api_key="sk-ant-test", http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler))))
     out = asyncio.run(c.ask("I miei gusti"))
-    assert out["suggerimenti"][0]["titolo_originale"] == "Heat"
+    # Interrotta per lunghezza: si tengono i titoli arrivati interi e la memoria
+    assert out["suggerimenti"][0]["titolo_originale"] == "Heat" and out["profilo"] == "Ama: thriller"
     body = sent["body"]
+    assert body["stream"] is True and body["max_tokens"] == 64000
     assert "/v1/messages" in sent["url"]
     assert body["model"] == "claude-opus-5-5" and body["fallbacks"] == "default"
     assert "server-side-fallback-2026-07-01" in sent["beta"]
     assert body["output_config"]["format"]["type"] == "json_schema"
     assert body["messages"] == [{"role": "user", "content": "I miei gusti"}]
+
+
+def test_hundred_films_and_series_and_truncated_answers():
+    """Almeno 100 film e 100 serie; una risposta interrotta conserva i titoli completi."""
+    from app.consigli import AiError, _json_from_text
+
+    prompt = build_prompt([], {}, [])
+    assert "100 film e 100 serie TV" in prompt
+    cut = '{"profilo": "Ama: noir", "suggerimenti": [{"titolo": "A", "tipo": "film"}, {"titolo": "B", "tipo": "serie"}, {"tit'
+    out = _json_from_text(cut, partial=True)
+    assert [s["titolo"] for s in out["suggerimenti"]] == ["A", "B"] and out["profilo"] == "Ama: noir"
+    with pytest.raises(AiError):
+        _json_from_text('{"profilo": "Ama', partial=True)
 
 
 # ------------------------------------------------- visti da Plex e Yamtrack
