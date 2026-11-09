@@ -10,6 +10,7 @@ from app.arr import ArrError, Radarr, Requests, Sonarr
 from app.catalog import Catalog
 from app.consigli import Consigli
 from app.gusti import Gusti
+from app.liste import Liste
 from app.yamtrack import Yamtrack
 from app.plex import Plex
 from app.config import Settings
@@ -50,6 +51,7 @@ def services(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "requests", Requests(str(tmp_path)))
     monkeypatch.setattr(main, "admin", Admin(str(tmp_path)))
     monkeypatch.setattr(main, "gusti", Gusti(str(tmp_path)))
+    monkeypatch.setattr(main, "liste", Liste(str(tmp_path)))
     monkeypatch.setattr(main, "consigli", Consigli(str(tmp_path)))
     monkeypatch.setattr(main, "yamtrack", Yamtrack())
     main.apply_admin_settings()
@@ -360,3 +362,43 @@ def test_admin_omdb_key(services, monkeypatch):
     assert services.get("/api/catalogo").json()["rotten_tomatoes"] is True
     services.put("/api/admin/omdb", json={"chiave": ""}, headers=h)
     assert main.catalog.rt.api_key == ""
+
+
+# ------------------------------------------------ watchlist, ignorati e cancella
+
+def test_watchlist_ignore_and_request(services):
+    assert services.get("/api/liste").json() == {"watchlist": [], "ignorati": []}
+    r = services.put("/api/liste/watchlist/movie-1001")
+    assert r.status_code == 200 and r.json()["voce"]["title"] and r.json()["voce"]["aggiunto_il"]
+    services.put("/api/liste/watchlist/tv-2001")
+    assert {v["id"] for v in services.get("/api/liste").json()["watchlist"]} == {"tv-2001", "movie-1001"}
+
+    # "Non mi interessa": esce dalla watchlist e finisce tra gli ignorati
+    services.put("/api/liste/ignorati/tv-2001")
+    d = services.get("/api/liste").json()
+    assert [v["id"] for v in d["watchlist"]] == ["movie-1001"] and [v["id"] for v in d["ignorati"]] == ["tv-2001"]
+    # Ripristino
+    assert services.delete("/api/liste/ignorati/tv-2001").json() == {"ok": True}
+    assert services.get("/api/liste").json()["ignorati"] == []
+
+    # Titolo fuori catalogo: serve la scheda mandata dalla pagina
+    assert services.put("/api/liste/watchlist/movie-999999").status_code == 400
+    ok = services.put("/api/liste/watchlist/movie-999999", json={"scheda": {"title": "Vecchio film", "year": "1980"}})
+    assert ok.status_code == 200 and ok.json()["voce"]["tmdb_id"] == 999999
+    assert services.put("/api/liste/preferiti/movie-1001").status_code == 404
+    assert services.put("/api/liste/watchlist/nonvalido").status_code == 400
+
+    # Richiederlo lo toglie dalla watchlist
+    services.post("/api/richieste", json={"id": "movie-1001"})
+    assert [v["id"] for v in services.get("/api/liste").json()["watchlist"]] == ["movie-999999"]
+
+
+def test_delete_request_only_from_cosaguardo(services):
+    services.post("/api/richieste", json={"id": "movie-1001"})
+    assert [r["id"] for r in services.get("/api/richieste").json()["richieste"]] == ["movie-1001"]
+    assert services.delete("/api/richieste/movie-1001").json() == {"ok": True}
+    assert services.get("/api/richieste").json()["richieste"] == []
+    # Radarr non viene toccato: il film resta li'
+    assert [m["tmdbId"] for m in mock_arr.radarr.state.movies] == [1001]
+    assert services.get("/api/richieste/movie-1001").json()["stato"] == "richiesto"
+    assert services.delete("/api/richieste/movie-1001").status_code == 404

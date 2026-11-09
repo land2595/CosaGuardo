@@ -14,12 +14,15 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 - Filtri per film o serie, per **categoria** (commedia, avventura, azione, animazione...) e per piattaforma in tutte le sezioni, ricerca per titolo, schede con trama, voto e link "dove guardarlo".
 - Le serie hanno un'etichetta che dice cosa c'è di nuovo: *Nuova serie*, *Nuova stagione* o *Nuovi episodi*.
 - **Trailer** nella scheda di ogni titolo, in italiano quando c'è.
-- **Richieste**: un pulsante "Richiedi" manda i film a **Radarr** e le serie a **Sonarr**, che li cercano e li scaricano. Per le serie scegli se richiedere tutte le stagioni o solo alcune. La sezione *Le mie richieste* mostra lo stato di ognuna, il progresso del download con il tempo rimanente e gli episodi scaricati per stagione.
+- **Richieste**: un pulsante "Richiedi" manda i film a **Radarr** e le serie a **Sonarr**, che li cercano e li scaricano. Per le serie scegli se richiedere tutte le stagioni o solo alcune. La sezione *Le mie liste → Richieste* mostra lo stato di ognuna, il progresso del download con il tempo rimanente e gli episodi scaricati per stagione.
 - **Plex**: se colleghi il tuo server Plex, CosaGuardo segna i titoli che hai già, mostra stagione per stagione quanti episodi hai e apre il titolo in Plex con un clic.
 - **Menu admin con PIN**: dall'ingranaggio in alto a destra scegli i tag di Sonarr e Radarr da applicare ai titoli che aggiungi, il profilo di qualità e la cartella.
 - **Stato della serie**: la scheda di ogni serie dice quando esce la prossima stagione (o il prossimo episodio) oppure se la serie è terminata o cancellata.
 - **Voti IMDb e Rotten Tomatoes con la media**: ogni locandina mostra la media dei due voti (in decimi), la scheda li mostra tutti e tre.
-- **Il tuo giudizio**: metti *mi piace* a film e serie, dai un voto da 0 a 5 stelle e scrivi nelle note cosa ti è piaciuto.
+- **Watchlist**: dalla scheda di un titolo scegli se richiederlo subito o metterlo nella watchlist con **＋ Watchlist**, tra le cose che vorresti vedere. Lo ritrovi in *Le mie liste → Da vedere*, con il pulsante per richiederlo quando vuoi.
+- **Non mi interessa**: i film e le serie che sicuramente non guarderai spariscono da tutte le sezioni e non ti vengono più suggeriti. Si ripristinano da *Le mie liste → Ignorati*.
+- **Cancella**: in *Le mie liste → Richieste* puoi togliere i titoli già richiesti per fare pulizia. Viene tolto solo dalla schermata di CosaGuardo: Plex, Radarr e Sonarr non vengono toccati.
+- **Il tuo giudizio**: metti *mi piace* a film e serie, dai un voto da 0 a 5 stelle e scrivi nelle note cosa ti è piaciuto. Con l'AI collegata, **✦ Suggerisci con l'AI** propone tre note brevissime (al massimo 20 parole) da aggiungere con un tocco; parte solo quando premi il pulsante.
 - **Suggeriti per te**: film e serie degli ultimi 50 anni scelti per te da un'AI in base a mi piace, voti e note, ognuno con il motivo. Puoi usare **Claude** (Anthropic) o qualsiasi servizio con API compatibile OpenAI, come **OpenRouter**, OpenAI o un server locale. Senza chiave usa i titoli consigliati da TMDB.
 - **Già visti da Yamtrack e/o Plex**: i titoli già visti vengono segnati, non ti vengono suggeriti di nuovo e i tuoi voti aiutano a capire i tuoi gusti. Puoi usare solo Yamtrack, solo Plex o tutti e due.
 
@@ -136,7 +139,7 @@ CosaGuardo legge la libreria ogni 10 minuti e riconosce i titoli dagli id TMDB e
 
 ## Suggeriti per te
 
-Nella scheda di ogni titolo c'è il riquadro **Il tuo giudizio**: ♥ *Mi piace*, un voto da 0 a 5 stelle e le note su cosa ti è piaciuto (regia, personaggi, atmosfera, finale...). Più giudizi dai, e più sono precise le note, migliori sono i suggerimenti. I giudizi sono salvati in `/data/gusti.json`; quelli che hai dato compaiono anche in fondo alla sezione *Suggeriti per te*.
+Nella scheda di ogni titolo c'è il riquadro **Il tuo giudizio**: ♥ *Mi piace*, un voto da 0 a 5 stelle e le note su cosa ti è piaciuto (regia, personaggi, atmosfera, finale...). Più giudizi dai, e più sono precise le note, migliori sono i suggerimenti. Se non sai cosa scrivere, **✦ Suggerisci con l'AI** (solo con l'AI collegata) propone tre note di massimo 20 parole: una sola richiesta all'AI, solo quando premi. La watchlist e i titoli ignorati, salvati in `/data/liste.json`, aiutano l'AI a capire cosa ti interessa e cosa no. I giudizi sono salvati in `/data/gusti.json`; quelli che hai dato compaiono anche in fondo alla sezione *Suggeriti per te*.
 
 ![Il tuo giudizio e i voti nella scheda](docs/giudizio.png)
 
@@ -245,6 +248,11 @@ Per i titoli **in arrivo** TMDB non sa ancora su quale piattaforma usciranno. Co
 | `POST /api/admin/tag` | Crea un tag in Sonarr o Radarr: `{"servizio": "sonarr", "nome": "da-vedere"}` (serve il token). |
 | `GET /api/plex` | Gli id TMDB dei film e delle serie già presenti su Plex. |
 | `GET /api/voti/{movie\|tv}/{id}` | Voti IMDb e Rotten Tomatoes di un titolo, con la media in decimi. |
+| `DELETE /api/richieste/{id}` | Toglie un titolo da *Le mie liste → Richieste*. Non cancella niente da Radarr, Sonarr o Plex. |
+| `GET /api/liste` | La watchlist e i titoli ignorati: `{"watchlist": [...], "ignorati": [...]}`. |
+| `PUT /api/liste/{lista}/{id}` | Aggiunge un titolo a `watchlist` o `ignorati` (lo toglie dall'altra lista). |
+| `DELETE /api/liste/{lista}/{id}` | Toglie un titolo da una lista (per gli ignorati: lo ripristina). |
+| `POST /api/gusti/{id}/note-ai` | Tre note brevissime (max 20 parole) proposte dall'AI per quel titolo. Non salva niente. |
 | `GET /api/gusti` | I tuoi giudizi (mi piace, voto, note). |
 | `PUT /api/gusti/{id}` | Aggiorna il giudizio di un titolo: `{"mi_piace": true, "voto": 4, "note": "..."}` (ogni campo è facoltativo; `"voto": null` lo toglie). |
 | `GET /api/suggeriti` | *Suggeriti per te* (se i giudizi sono cambiati, li ricalcola in background). `POST /api/suggeriti/aggiorna` li rifà subito. |
@@ -284,6 +292,7 @@ app/
   catalog.py     raccolta dati da TMDB, unione dei doppioni, trailer, cache
   admin.py       menu admin: PIN e impostazioni salvate in /data
   arr.py         richieste a Radarr e Sonarr
+  liste.py       watchlist e titoli ignorati
   main.py        server FastAPI e aggiornamento periodico
   static/        interfaccia (HTML, CSS, JS, font)
 tests/           test e finto server TMDB

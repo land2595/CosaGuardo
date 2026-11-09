@@ -25,7 +25,7 @@
       <button role="tab" class="tab" data-view="per_te">Suggeriti per te</button>
       <button role="tab" class="tab" data-view="tendenze">Di tendenza in Italia</button>
       <button role="tab" class="tab" data-view="bambini">Bambini</button>
-      <button role="tab" class="tab" data-view="richieste" hidden>Le mie richieste</button>
+      <button role="tab" class="tab" data-view="richieste">Le mie liste</button>
     </nav>
     <div class="status" id="status" aria-live="polite"></div>
     <button class="admin-btn" id="admin-open" type="button" aria-label="Impostazioni" title="Impostazioni">
@@ -123,15 +123,19 @@
             <textarea id="d-note" rows="2" maxlength="2000" placeholder="Cosa ti è piaciuto in particolare? (regia, personaggi, atmosfera, finale…) Le note aiutano a scegliere i suggerimenti per te."></textarea>
           </label>
           <div class="taste-foot">
+            <button type="button" class="note-ai" id="d-note-ai" hidden title="Una sola richiesta all'AI, solo quando premi">✦ Suggerisci con l'AI</button>
             <button type="button" class="a-link" id="d-note-save" hidden>Salva le note</button>
             <span class="taste-msg" id="d-taste-msg" role="status"></span>
           </div>
+          <div class="note-sugg" id="d-note-sugg" hidden></div>
         </section>
         <div class="d-status" id="d-status" hidden></div>
         <div class="d-actions" id="d-actions">
           <button class="btn-gold" id="d-trailer" hidden>▶ Guarda il trailer</button>
           <button class="btn-request" id="d-request" hidden></button>
           <button class="btn-request more" id="d-more" hidden>＋ Altre stagioni</button>
+          <button class="btn-request watch" id="d-watch" type="button"></button>
+          <button class="btn-request ignore" id="d-ignore" type="button"></button>
         </div>
         <div class="seasons-panel" id="d-seasons" hidden>
           <div class="seasons-head">

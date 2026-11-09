@@ -15,6 +15,8 @@ const state = {
   requests: [],
   requestsLoaded: false,
   gusti: new Map(),
+  liste: { watchlist: new Map(), ignorati: new Map() },
+  lista: ["watchlist", "richieste", "ignorati"].includes(localGet("lista")) ? localGet("lista") : "watchlist",
   visti: {},
   suggeriti: null,
 };
@@ -103,6 +105,7 @@ function filtered(view = state.view, skip = "") {
   const items = state.data?.[view] || [];
   const q = state.q.toLowerCase();
   return items.filter((i) =>
+    !state.liste.ignorati.has(i.id) &&
     (state.tipo === "all" || i.type === state.tipo) &&
     (skip === "platforms" || !state.platforms.size || (i.platforms || []).some((p) => state.platforms.has(p))) &&
     (skip === "categoria" || !state.categoria || (i.categorie || []).includes(state.categoria)) &&
@@ -147,6 +150,7 @@ function cardHtml(i, n = 0) {
     upcoming && i.date ? calHtml(i.date) : "",
     best ? scoreHtml(i) : "",
     onPlex(i) ? `<span class="on-plex">Su Plex</span>` : "",
+    state.liste.watchlist.has(i.id) && state.view !== "richieste" ? `<span class="on-watch" title="Nella tua watchlist">Da vedere</span>` : "",
     seenHtml(i),
     tasteHtml(i),
   ].join("");
@@ -440,7 +444,7 @@ function findItem(id) {
   // Prima la sezione aperta (es. in "I migliori" l'elemento ha il voto IMDb), poi le altre
   const d = state.data || {};
   const lists = [d[state.view], d.novita, d.tendenze, d.prossimamente, d.migliori, d.per_te, d.bambini,
-    [...state.gusti.values()], state.requests];
+    [...state.gusti.values()], [...state.liste.watchlist.values()], [...state.liste.ignorati.values()], state.requests];
   for (const list of lists) {
     const found = (list || []).find((x) => x.id === id);
     if (found) return found;
@@ -723,6 +727,7 @@ async function sendRequest(stagioni) {
     if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Richiesta non riuscita.");
     requestMsg(`Fatto! ${body.servizio} sta cercando ${stagioni?.length ? `le stagioni ${stagioni.join(", ")}` : "il titolo"}.`);
     state.requestsLoaded = false;
+    if (state.liste.watchlist.delete(id)) renderListButtons(item);
     loadRequestState(item);
   } catch (err) {
     setRequestButton("assente", item?.type === "movie" ? "Radarr" : "Sonarr");
@@ -734,10 +739,8 @@ async function loadServizi() {
   try {
     state.servizi = await (await fetch("/api/servizi")).json();
   } catch { /* ignora */ }
-  const any = state.servizi.radarr || state.servizi.sonarr;
-  document.querySelector('.tab[data-view="richieste"]').hidden = !any;
-  if (!any && state.view === "richieste") setView("novita");
   if (state.servizi.plex) loadPlex();
+  if ($("#detail").open) $("#d-note-ai").hidden = !state.servizi.ai;
   if (state.servizi.visti) loadVisti();
 }
 
@@ -758,7 +761,7 @@ function requestCardHtml(r, n) {
   const info = r.type === "tv"
     ? seasonsSummary(det) || (r.stagioni ? `Stagioni ${r.stagioni.join(", ")}` : "Tutte le stagioni")
     : det?.stato === "disponibile" ? ["Scaricato", det.qualita, fmtSize(det.dimensione)].filter(Boolean).join(" · ") : "";
-  return `<button class="card req-card" data-id="${esc(r.id)}" style="--i:${Math.min(n, 18)}">
+  return `<div class="tile" style="--i:${Math.min(n, 18)}"><button class="card req-card" data-id="${esc(r.id)}">
     <div class="poster">
       ${poster}
       <span class="pill">${r.type === "movie" ? "Film" : "Serie TV"}</span>
@@ -770,38 +773,93 @@ function requestCardHtml(r, n) {
     <h3>${esc(r.title)}</h3>
     ${info ? `<span class="sub">${esc(info)}</span>` : ""}
     <span class="meta"><b>Richiesto ${esc(when)}</b> · ${r.type === "movie" ? "Radarr" : "Sonarr"}</span>
-  </button>`;
+  </button>
+  <div class="tile-actions">
+    <button type="button" class="tile-btn danger" data-act="cancella" data-id="${esc(r.id)}"
+      title="Lo toglie solo da questa schermata: su Plex, Radarr e Sonarr resta tutto com'è">🗑 Cancella</button>
+  </div></div>`;
+}
+
+// Locandina della watchlist o degli ignorati, con i pulsanti sotto
+function listTileHtml(i, n, lista) {
+  const svc = i.type === "movie" ? state.servizi.radarr : state.servizi.sonarr;
+  const acts = lista === "watchlist"
+    ? (svc ? `<button type="button" class="tile-btn gold" data-act="richiedi" data-id="${esc(i.id)}">Richiedi</button>` : "") +
+      `<button type="button" class="tile-btn" data-act="togli" data-id="${esc(i.id)}" title="Togli dalla watchlist">✕ Togli</button>`
+    : `<button type="button" class="tile-btn" data-act="ripristina" data-id="${esc(i.id)}" title="Torna a vederlo nelle sezioni">↺ Ripristina</button>`;
+  const html = cardHtml(i, n).replace(/ style="--i:\d+"/, "");
+  return `<div class="tile ${lista === "ignorati" ? "dim" : ""}" style="--i:${Math.min(n, 18)}">${html}<div class="tile-actions">${acts}</div></div>`;
 }
 
 let requestsTimer = null;
 
+function listaFilter(list) {
+  const q = state.q.toLowerCase();
+  return list.filter((r) => (state.tipo === "all" || r.type === state.tipo) &&
+    (!q || (r.title || "").toLowerCase().includes(q) || (r.original_title || "").toLowerCase().includes(q)));
+}
+
+const LISTA_EMPTY = {
+  watchlist: ["La watchlist è vuota", "Apri un film o una serie e premi <b>＋ Watchlist</b> per metterlo da parte senza richiederlo subito."],
+  richieste: ["Nessuna richiesta, per ora", "Apri un titolo e premi “Richiedi”: i film vanno a Radarr, le serie a Sonarr."],
+  ignorati: ["Nessun titolo ignorato", "Premi <b>⊘ Non mi interessa</b> nella scheda di un titolo per non vederlo più nelle sezioni e nei suggerimenti."],
+};
+
 async function renderRequests(silent = false) {
-  if (!state.requestsLoaded) {
-    if (!silent) content.innerHTML = `<section class="block"><div class="grid">${'<div class="card skeleton"><div class="poster"></div><h3></h3><span class="meta"></span></div>'.repeat(6)}</div></section>`;
+  const arr = state.servizi.radarr || state.servizi.sonarr;
+  if (!state.requestsLoaded && (arr || state.requests.length || !silent)) {
+    if (!silent && state.lista === "richieste") content.innerHTML = `<section class="block"><div class="grid">${'<div class="card skeleton"><div class="poster"></div><h3></h3><span class="meta"></span></div>'.repeat(6)}</div></section>`;
     try {
       const d = await (await fetch("/api/richieste")).json();
       state.requests = d.richieste || [];
       state.requestsLoaded = true;
     } catch {
-      content.innerHTML = `<div class="req-empty"><h3>Richieste non disponibili</h3><p>Impossibile contattare il server.</p></div>`;
-      return;
+      if (state.lista === "richieste") {
+        content.innerHTML = `<div class="req-empty"><h3>Richieste non disponibili</h3><p>Impossibile contattare il server.</p></div>`;
+        return;
+      }
     }
   }
   if (state.view !== "richieste") return;
   $("#empty").hidden = true;
-  const q = state.q.toLowerCase();
-  const list = state.requests.filter((r) => (state.tipo === "all" || r.type === state.tipo) &&
-    (!q || (r.title || "").toLowerCase().includes(q)));
-  const active = list.filter((r) => r.download).length;
-  content.innerHTML = list.length
-    ? `<section class="block">
-        <div class="block-head"><h2>Le mie richieste</h2><span class="count">${list.length} ${list.length === 1 ? "titolo" : "titoli"}${active ? ` · ${active} in download` : ""}</span></div>
+  const showReq = arr || state.requests.length;
+  if (!showReq && state.lista === "richieste") state.lista = "watchlist";
+  const tabs = [
+    ["watchlist", "Da vedere", state.liste.watchlist.size],
+    showReq ? ["richieste", "Richieste", state.requests.length] : null,
+    ["ignorati", "Ignorati", state.liste.ignorati.size],
+  ].filter(Boolean);
+  const seg = `<div class="list-bar"><div class="seg list-seg" role="tablist">${tabs.map(([k, label, n]) =>
+    `<button type="button" data-lista="${k}" class="${state.lista === k ? "active" : ""}" role="tab" aria-selected="${state.lista === k}">${label} <span class="n">${n}</span></button>`).join("")}</div></div>`;
+
+  let body = "";
+  const lista = state.lista;
+  const all = lista === "richieste" ? state.requests : [...state.liste[lista].values()];
+  const list = listaFilter(all);
+  let active = 0;
+  if (lista === "richieste") {
+    active = list.filter((r) => r.download).length;
+    body = list.length ? `<section class="block">
+        <div class="block-head"><h2>Le mie richieste</h2><span class="count">${plural(list.length, "titolo", "titoli")}${active ? ` · ${active} in download` : ""}</span></div>
+        <p class="note">“Cancella” toglie il titolo solo da questa schermata: su Plex, Radarr e Sonarr resta tutto com'è.</p>
         <div class="grid">${list.map(requestCardHtml).join("")}</div>
-      </section>`
-    : state.requests.length
-      ? `<div class="req-empty"><h3>Nessuna richiesta con questi filtri</h3><p>Prova a scegliere “Tutti” o a cambiare la ricerca.</p></div>`
-      : `<div class="req-empty"><h3>Nessuna richiesta, per ora</h3><p>Apri un titolo e premi “Richiedi”: i film vanno a Radarr, le serie a Sonarr.</p></div>`;
-  if (silent) content.querySelectorAll(".card").forEach((c) => { c.style.animation = "none"; });
+      </section>` : "";
+  } else if (list.length) {
+    const title = lista === "watchlist" ? "Da vedere" : "Non mi interessano";
+    const extra = lista === "ignorati" ? `<p class="note">Questi titoli non compaiono nelle sezioni e non ti vengono suggeriti.</p>` : "";
+    body = `<section class="block">
+        <div class="block-head"><h2>${title}</h2><span class="count">${plural(list.length, "titolo", "titoli")}</span></div>${extra}
+        <div class="grid">${list.map((i, n) => listTileHtml(i, n, lista)).join("")}</div>
+      </section>`;
+  }
+  if (!body) {
+    const [h, p] = all.length
+      ? ["Nessun titolo con questi filtri", "Prova a scegliere “Tutti” o a cambiare la ricerca."]
+      : LISTA_EMPTY[lista];
+    body = `<div class="req-empty"><h3>${h}</h3><p>${p}</p></div>`;
+  }
+  content.innerHTML = seg + body;
+  if (silent) content.querySelectorAll(".card, .tile").forEach((c) => { c.style.animation = "none"; });
   // Con download in corso aggiorna i progressi ogni 15 secondi
   clearTimeout(requestsTimer);
   if (active) {
@@ -812,6 +870,115 @@ async function renderRequests(silent = false) {
     }, 15000);
   }
 }
+
+// --------------------------------------------------- watchlist e ignorati
+
+async function loadListe() {
+  try {
+    const d = await (await fetch("/api/liste")).json();
+    state.liste = { watchlist: new Map(d.watchlist.map((v) => [v.id, v])), ignorati: new Map(d.ignorati.map((v) => [v.id, v])) };
+    rerender();
+  } catch { /* ignora */ }
+}
+
+function rerender() {
+  if (!state.data) return;
+  if (state.view === "richieste") { renderRequests(true); return; }
+  renderFilters();
+  renderHero();
+  render();
+}
+
+// Aggiunge (on=true) o toglie un titolo da una lista
+async function setLista(lista, i, on) {
+  const url = `/api/liste/${lista}/${encodeURIComponent(i.id)}`;
+  const r = await fetch(url, on
+    ? { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scheda: scheda(i) }) }
+    : { method: "DELETE" });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Non sono riuscito a salvare.");
+  for (const k of ["watchlist", "ignorati"]) state.liste[k].delete(i.id);
+  if (on) state.liste[lista].set(i.id, body.voce);
+  rerender();
+}
+
+function renderListButtons(i) {
+  const w = $("#d-watch");
+  const inW = state.liste.watchlist.has(i.id);
+  w.classList.toggle("on", inW);
+  w.textContent = inW ? "✓ In watchlist" : "＋ Watchlist";
+  w.title = inW ? "Togli dalla watchlist" : "Mettilo tra le cose da vedere, senza richiederlo subito";
+  const x = $("#d-ignore");
+  const ign = state.liste.ignorati.has(i.id);
+  x.classList.toggle("on", ign);
+  x.textContent = ign ? "↺ Ignorato · ripristina" : "⊘ Non mi interessa";
+  x.title = ign ? "Torna a vederlo nelle sezioni e nei suggerimenti" : "Non lo vedrai più nelle sezioni e nei suggerimenti";
+}
+
+async function toggleLista(lista) {
+  const id = $("#detail").dataset.id;
+  const i = findItem(id);
+  if (!i) return;
+  const on = !state.liste[lista].has(id);
+  try {
+    await setLista(lista, i, on);
+    if ($("#detail").dataset.id !== id) return;
+    renderListButtons(i);
+    requestMsg(lista === "watchlist"
+      ? (on ? "Aggiunto alla watchlist: lo trovi in “Le mie liste”." : "Tolto dalla watchlist.")
+      : (on ? "Non lo vedrai più nelle sezioni e nei suggerimenti. Lo ritrovi in “Le mie liste” → Ignorati." : "Ripristinato."));
+  } catch (err) {
+    requestMsg(err.message, true);
+  }
+}
+
+$("#d-watch").addEventListener("click", () => toggleLista("watchlist"));
+$("#d-ignore").addEventListener("click", () => toggleLista("ignorati"));
+
+async function deleteRequest(id) {
+  const r = await fetch(`/api/richieste/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!r.ok && r.status !== 404) throw new Error("Non sono riuscito a cancellarla.");
+  state.requests = state.requests.filter((x) => x.id !== id);
+  renderRequests(true);
+}
+
+content.addEventListener("click", async (e) => {
+  const seg = e.target.closest(".list-seg button[data-lista]");
+  if (seg) {
+    state.lista = seg.dataset.lista;
+    localSet("lista", state.lista);
+    renderRequests();
+    return;
+  }
+  const b = e.target.closest(".tile-btn[data-act]");
+  if (!b) return;
+  const id = b.dataset.id;
+  const act = b.dataset.act;
+  try {
+    if (act === "cancella") {
+      // Due tocchi: il primo chiede conferma
+      if (!b.classList.contains("confirm")) {
+        b.classList.add("confirm");
+        b.textContent = "Sicuro? Tocca ancora";
+        setTimeout(() => { if (b.isConnected) { b.classList.remove("confirm"); b.textContent = "🗑 Cancella"; } }, 3500);
+        return;
+      }
+      b.disabled = true;
+      await deleteRequest(id);
+    } else if (act === "togli" || act === "ripristina") {
+      b.disabled = true;
+      await setLista(act === "togli" ? "watchlist" : "ignorati", findItem(id), false);
+    } else if (act === "richiedi") {
+      openDetail(id);
+      const i = findItem(id);
+      if (i?.type === "tv") openSeasons();
+      else sendRequest();
+    }
+  } catch (err) {
+    b.disabled = false;
+    b.textContent = err.message;
+  }
+});
 
 function openDetail(id) {
   const i = findItem(id);
@@ -831,6 +998,12 @@ function openDetail(id) {
     $("#d-play").onclick = $("#d-trailer").onclick = () => playTrailer(t);
   });
   loadRequestState(i);
+  renderListButtons(i);
+  $("#d-note-ai").hidden = !state.servizi.ai;
+  $("#d-note-ai").disabled = false;
+  $("#d-note-ai").textContent = "✦ Suggerisci con l'AI";
+  $("#d-note-sugg").hidden = true;
+  $("#d-note-sugg").innerHTML = "";
   $("#d-hero").style.backgroundImage = i.backdrop ? `url("${i.backdrop.replace("/w780/", "/w1280/")}")` : "";
   const poster = $("#d-poster");
   poster.hidden = !i.poster;
@@ -1003,6 +1176,46 @@ function saveNote() {
 }
 $("#d-note-save").addEventListener("click", saveNote);
 $("#d-note").addEventListener("blur", saveNote);
+
+// Note proposte dall'AI: una richiesta solo quando premi il pulsante
+$("#d-note-ai").addEventListener("click", async () => {
+  const id = $("#detail").dataset.id;
+  const i = findItem(id);
+  const b = $("#d-note-ai");
+  if (!i) return;
+  b.disabled = true;
+  b.textContent = "L'AI sta pensando…";
+  tasteMsg("");
+  try {
+    const r = await fetch(`/api/gusti/${encodeURIComponent(id)}/note-ai`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scheda: scheda(i) }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Suggerimenti non riusciti.");
+    if ($("#detail").dataset.id !== id) return;
+    const box = $("#d-note-sugg");
+    box.innerHTML = `<span class="note-sugg-label">Tocca per aggiungerla alle note</span>` +
+      body.note.map((n) => `<button type="button" class="note-chip">${esc(n)}</button>`).join("");
+    box.hidden = false;
+  } catch (err) {
+    if ($("#detail").dataset.id === id) tasteMsg(err.message, true);
+  } finally {
+    if ($("#detail").dataset.id === id) {
+      b.disabled = false;
+      b.textContent = "✦ Altri suggerimenti";
+    }
+  }
+});
+$("#d-note-sugg").addEventListener("click", (e) => {
+  const chip = e.target.closest(".note-chip");
+  if (!chip) return;
+  const note = $("#d-note");
+  const cur = note.value.trim();
+  note.value = cur ? `${cur}${/[.!?…]$/.test(cur) ? "" : "."} ${chip.textContent}` : chip.textContent;
+  chip.remove();
+  if (!$("#d-note-sugg").querySelector(".note-chip")) $("#d-note-sugg").hidden = true;
+  saveNote();
+});
 
 // ----------------------------------------------------- suggeriti per te
 
@@ -1756,6 +1969,7 @@ $("#d-more").addEventListener("click", openSeasons);
 
 setView(state.view);
 loadServizi();
+loadListe();
 loadGusti().then(() => { if (state.view === "per_te") loadSuggeriti(); });
 skeleton();
 load().catch(() => { $("#error").hidden = false; $("#error").textContent = "Impossibile contattare il server."; });

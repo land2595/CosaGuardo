@@ -34,6 +34,8 @@ FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "clau
 HOW_MANY = 30
 YEARS = 50
 RETRY_SECONDS = 120   # dopo un errore non si riprova da soli prima di 2 minuti
+NOTE_WORDS = 20       # note suggerite dall'AI: brevissime
+NOTE_HOW_MANY = 3
 
 SCHEMA = {
     "type": "object",
@@ -67,6 +69,20 @@ SYSTEM = (
 )
 
 
+NOTE_SCHEMA = {
+    "type": "object",
+    "properties": {"note": {"type": "array", "items": {"type": "string", "description": "Max 20 parole"}}},
+    "required": ["note"],
+    "additionalProperties": False,
+}
+
+NOTE_SYSTEM = (
+    "Aiuti una persona a scrivere le sue note personali su film e serie TV che ha visto, cosi' da ricordare "
+    "cosa l'ha colpita e ricevere consigli migliori. Scrivi frasi brevissime, naturali, in prima persona, "
+    "in italiano."
+)
+
+
 class AiError(RuntimeError):
     pass
 
@@ -75,7 +91,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str], how_many: int = HOW_MANY) -> str:
+def _names(items: list[dict]) -> str:
+    return "; ".join(f"{i.get('title')} ({i.get('year') or '?'})" for i in items if i.get("title"))
+
+
+def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str], how_many: int = HOW_MANY,
+                 watchlist: list[dict] | None = None, ignorati: list[dict] | None = None) -> str:
     """Il profilo dei gusti spiegato a Claude."""
     first_year = date.today().year - YEARS
     lines = []
@@ -101,6 +122,13 @@ def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str]
     if seen:
         parts.append("Titoli che ho gia' visto o sto guardando (senza voto):\n" + "; ".join(seen[:300]))
 
+    if watchlist:
+        parts.append("Nella mia watchlist, cose che voglio vedere (indicano i miei interessi, non suggerirle): "
+                     + _names(watchlist[:150]))
+    if ignorati:
+        parts.append("Titoli che ho scartato perche' non mi interessano (non suggerirli, ne' titoli troppo simili): "
+                     + _names(ignorati[:150]))
+
     parts.append(
         f"Suggeriscimi {how_many} film e serie TV che potrebbero piacermi davvero, scegliendo tra tutto cio' "
         f"che e' uscito dal {first_year} a oggi, non solo le novita': al massimo un terzo degli ultimi 3 anni, "
@@ -114,8 +142,8 @@ def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str]
     return "\n\n".join(parts)
 
 
-def _json_from_text(text: str) -> list[dict]:
-    """La lista "suggerimenti" da una risposta JSON (anche dentro un blocco ```json)."""
+def _json_from_text(text: str, key: str = "suggerimenti") -> list:
+    """La lista `key` da una risposta JSON (anche dentro un blocco ```json)."""
     text = (text or "").strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
@@ -123,12 +151,47 @@ def _json_from_text(text: str) -> list[dict]:
     if start < 0 or end < start:
         raise AiError("Risposta del modello non leggibile.")
     try:
-        items = json.loads(text[start:end + 1])["suggerimenti"]
+        items = json.loads(text[start:end + 1])[key]
     except (ValueError, KeyError, TypeError) as e:
         raise AiError("Risposta del modello non leggibile.") from e
     if not isinstance(items, list):
         raise AiError("Risposta del modello non leggibile.")
     return items
+
+
+def short(text: str, words: int = NOTE_WORDS) -> str:
+    """Taglia un testo a un massimo di parole."""
+    parts = str(text or "").split()
+    if len(parts) <= words:
+        return " ".join(parts)
+    return " ".join(parts[:words]).rstrip(",;:.") + "…"
+
+
+def build_note_prompt(item: dict, gusto: dict | None) -> str:
+    """La richiesta di qualche nota breve sul perche' un titolo e' piaciuto (o no)."""
+    g = gusto or {}
+    kind = "film" if item.get("type") == "movie" else "serie TV"
+    title = item.get("title") or ""
+    if item.get("original_title") and item["original_title"] != title:
+        title += f" ({item['original_title']})"
+    lines = [f"Titolo: {title}", f"Tipo: {kind}, {item.get('year') or '?'}"]
+    if item.get("genres"):
+        lines.append("Generi: " + ", ".join(item["genres"]))
+    if item.get("overview"):
+        lines.append("Trama: " + item["overview"][:700])
+    voto = g.get("voto")
+    if voto is not None:
+        lines.append(f"Il mio voto: {voto}/5")
+    if g.get("note"):
+        lines.append(f'Cosa ho gia\' scritto: "{g["note"][:400]}"')
+    low = voto is not None and voto <= 2 and not g.get("mi_piace")
+    what = "cosa potrebbe non avermi convinto" if low else "cosa potrebbe essermi piaciuto"
+    lines.append(
+        f"\nProponimi {NOTE_HOW_MANY} note alternative, in prima persona, su {what} di questo titolo. "
+        f"Ognuna al massimo {NOTE_WORDS} parole, concreta e diversa dalle altre (regia, interpretazioni, "
+        "atmosfera, scrittura, ritmo, colonna sonora, finale...). Niente spoiler, niente riassunto della trama."
+    )
+    return "\n".join(lines)
 
 
 class Consigli:
@@ -191,11 +254,28 @@ class Consigli:
 
     async def ask(self, prompt: str) -> list[dict]:
         """Chiede i suggerimenti al modello scelto; restituisce la lista grezza."""
-        if self.provider == "openai":
-            return await self._ask_openai(prompt)
-        return await self._ask_claude(prompt)
+        example = ('{"suggerimenti": [{"titolo": "...", "titolo_originale": "...", "anno": 1999, '
+                   '"tipo": "film" o "serie", "motivo": "..."}]}')
+        return await self._complete(SYSTEM, prompt, SCHEMA, "suggerimenti", example, max_tokens=16000, effort="medium")
 
-    async def _ask_claude(self, prompt: str) -> list[dict]:
+    async def note(self, item: dict, gusto: dict | None) -> list[str]:
+        """Qualche nota brevissima (max 20 parole) sul perche' un titolo e' piaciuto: una sola richiesta."""
+        raw = await self._complete(NOTE_SYSTEM, build_note_prompt(item, gusto), NOTE_SCHEMA, "note",
+                                   '{"note": ["...", "...", "..."]}', max_tokens=1500, effort="low")
+        out = [short(n) for n in raw if isinstance(n, str) and n.strip()]
+        out = list(dict.fromkeys(n for n in out if n))[:NOTE_HOW_MANY]
+        if not out:
+            raise AiError("Il modello non ha proposto nessuna nota: riprova.")
+        return out
+
+    async def _complete(self, system: str, prompt: str, schema: dict, key: str, example: str,
+                        max_tokens: int, effort: str) -> list:
+        if self.provider == "openai":
+            return await self._ask_openai(system, prompt, schema, key, example)
+        return await self._ask_claude(system, prompt, schema, key, max_tokens, effort)
+
+    async def _ask_claude(self, system: str, prompt: str, schema: dict, key: str, max_tokens: int,
+                          effort: str) -> list:
         extra: dict = {}
         if self.model in FALLBACK_MODELS:
             # Se il modello rifiuta la richiesta, l'API la ripete su un altro modello
@@ -204,10 +284,10 @@ class Consigli:
             async with self._client() as client:
                 response = await client.beta.messages.create(
                     model=self.model,
-                    max_tokens=16000,
-                    system=SYSTEM,
+                    max_tokens=max_tokens,
+                    system=system,
                     messages=[{"role": "user", "content": prompt}],
-                    output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
+                    output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
                     **extra,
                 )
         except anthropic.AnthropicError as e:
@@ -217,7 +297,7 @@ class Consigli:
         if response.stop_reason == "max_tokens":
             raise AiError("Risposta troppo lunga, interrotta: riprova.")
         text = next((b.text for b in response.content if b.type == "text"), "")
-        return _json_from_text(text)
+        return _json_from_text(text, key)
 
     # ------------------------------------------- API compatibili con OpenAI
 
@@ -276,9 +356,9 @@ class Consigli:
         if models and model not in models:
             raise AiError(f"Il modello «{model}» non c'e' tra quelli offerti da {base_url}.")
 
-    async def _ask_openai(self, prompt: str) -> list[dict]:
-        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
-        structured = {"type": "json_schema", "json_schema": {"name": "suggerimenti", "strict": True, "schema": SCHEMA}}
+    async def _ask_openai(self, system: str, prompt: str, schema: dict, key: str, example: str) -> list:
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+        structured = {"type": "json_schema", "json_schema": {"name": key, "strict": True, "schema": schema}}
         try:
             async with self._http(self.api_key, self.base_url) as client:
                 r = await client.post("/chat/completions", json={
@@ -287,9 +367,7 @@ class Consigli:
                 if r.status_code in (400, 422) and unsupported:
                     # Modello senza risposte con schema: si chiede il JSON nel testo
                     plain = messages[:1] + [{"role": "user", "content": prompt + (
-                        "\n\nRispondi solo con un oggetto JSON, senza altro testo, in questa forma: "
-                        '{"suggerimenti": [{"titolo": "...", "titolo_originale": "...", "anno": 1999, '
-                        '"tipo": "film" o "serie", "motivo": "..."}]}')}]
+                        "\n\nRispondi solo con un oggetto JSON, senza altro testo, in questa forma: " + example)}]
                     r = await client.post("/chat/completions", json={"model": self.model, "messages": plain})
         except httpx.HTTPError as e:
             raise AiError(f"Servizio AI non raggiungibile: {e}") from e
@@ -306,7 +384,7 @@ class Consigli:
             content = "".join(c.get("text", "") for c in content if isinstance(c, dict))
         if not content:
             raise AiError("Il modello non ha risposto a questa richiesta.")
-        return _json_from_text(content)
+        return _json_from_text(content, key)
 
     # ------------------------------------------------------- generazione
 
@@ -332,7 +410,7 @@ class Consigli:
             return False
         return not self.data.get("titoli") or self.stale(gusti_modified)
 
-    async def generate(self, catalog, gusti, visti: dict[str, dict], platforms: list[str]) -> None:
+    async def generate(self, catalog, gusti, visti: dict[str, dict], platforms: list[str], liste=None) -> None:
         """Ricalcola i suggerimenti e li salva. Gli errori finiscono in data["errore"]."""
         if self.running:
             return
@@ -340,9 +418,11 @@ class Consigli:
         self._last_try = time.monotonic()
         modified = gusti.modified
         try:
-            exclude = {g["id"] for g in gusti.items} | set(visti)
+            watchlist = liste.items("watchlist") if liste else []
+            ignorati = liste.items("ignorati") if liste else []
+            exclude = {g["id"] for g in gusti.items} | set(visti) | {i["id"] for i in watchlist + ignorati}
             if self.configured:
-                prompt = build_prompt(gusti.items, visti, platforms)
+                prompt = build_prompt(gusti.items, visti, platforms, watchlist=watchlist, ignorati=ignorati)
                 raw = await self.ask(prompt)
                 items = await self._resolve(catalog, raw, exclude)
                 source = "ai"
