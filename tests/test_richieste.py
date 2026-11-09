@@ -63,7 +63,24 @@ def services(tmp_path, monkeypatch):
 def test_trailer_prefers_italian(services):
     r = services.get("/api/trailer/movie/1001").json()
     assert r["trailer"]["key"] == "aqz-KE-bpKQ" and r["trailer"]["lingua"] == "it"
-    assert services.get("/api/trailer/movie/1005").json()["trailer"] is None
+    assert services.get("/api/trailer/movie/1005").json()["trailer"]["key"] == "itaDOPPIATO"  # solo su YouTube
+    assert services.get("/api/trailer/tv/2005").json()["trailer"] is None  # da nessuna parte
+
+
+def test_trailer_italian_from_youtube(services):
+    """TMDB ha solo l'inglese: si prende il trailer doppiato da YouTube, non recensioni, altri film o SUB ITA."""
+    r = services.get("/api/trailer/movie/1002").json()["trailer"]
+    assert r["key"] == "itaDOPPIATO" and r["lingua"] == "it"
+
+
+def test_youtube_pick_rules():
+    from app.youtube import pick
+    v = lambda k, n, d=150: {"key": k, "name": n, "durata": d}  # noqa: E731
+    assert pick([v("a", "Dune: Parte Due | Trailer SUB ITA")], ["Dune - Parte due"])["sottotitoli"] is True
+    assert pick([v("a", "Dune | Official Trailer")], ["Dune"]) is None
+    assert pick([v("a", "Dunetto | Trailer italiano")], ["Dune"]) is None
+    assert pick([v("a", "DUNE Trailer Italiano", 0)], ["Dune"]) is None
+    assert pick([v("a", "La città proibita - Trailer ufficiale")], ["La citta proibita"])["key"] == "a"
 
 
 def test_request_movie_goes_to_radarr(services):
