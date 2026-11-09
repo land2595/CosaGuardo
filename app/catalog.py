@@ -35,7 +35,7 @@ TV_STATUS = {
 }
 
 # Versione del formato dei dati salvati: se cambia, il catalogo si ricalcola all'avvio
-SCHEMA = 2
+SCHEMA = 3
 
 # Categorie mostrate nei filtri: chiave -> (nome, generi TMDB dei film, generi TMDB delle serie).
 # Le serie hanno generi accorpati (es. "Action & Adventure"), quindi un genere puo' finire in due categorie.
@@ -309,6 +309,7 @@ class Catalog:
             "platforms": platforms,
             "watch_link": link,
             "tmdb_url": f"https://www.themoviedb.org/{kind}/{d['id']}",
+            "imdb_id": d.get("imdb_id") or (d.get("external_ids") or {}).get("imdb_id"),
         }
 
     async def _build(self, client, kind: str, ids: list[int], today: date) -> list[dict]:
@@ -391,9 +392,12 @@ class Catalog:
             migliori_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
             self._best_force = False
 
+        novita = unique_items(novita)
+        await self._add_ratings(tendenze, novita, migliori or [], bambini)
+
         return {
             "schema": SCHEMA,
-            "novita": unique_items(novita),
+            "novita": novita,
             "tendenze": tendenze,
             "prossimamente": prossimamente,
             "migliori": migliori or [],
@@ -402,6 +406,36 @@ class Catalog:
             "piattaforme": piattaforme,
             "aggiornato": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
+
+    async def _add_ratings(self, *groups: list[dict]) -> None:
+        """Voti IMDb e Rotten Tomatoes (con la media) su tutti i titoli gia' usciti.
+
+        I gruppi vanno in ordine di priorita': se la quota giornaliera di OMDb finisce,
+        i Tomatometer mancanti arrivano ai primi titoli.
+        """
+        items = [it for g in groups for it in g if it.get("imdb_id")]
+        if not items:
+            return
+        imdb = await self.imdb.lookup({it["imdb_id"] for it in items})
+        wanted = list(dict.fromkeys((it["imdb_id"], int(it["year"] or 0)) for it in items))
+        tomatoes = await self.rt.lookup(wanted) if self.rt.configured else {
+            i: v for i, _ in wanted if (v := self.rt.cached(i)) is not None}
+        for it in items:
+            it["voti"] = combined_ratings(it, imdb.get(it["imdb_id"]), tomatoes.get(it["imdb_id"]))
+
+    async def ratings(self, kind: str, tmdb_id: int, imdb_id: str | None = None,
+                      title: str = "", year: int = 0) -> dict | None:
+        """Voti IMDb e Rotten Tomatoes di un singolo titolo (per la scheda)."""
+        if not imdb_id:
+            async with self._client() as client:
+                ext = await self._get(client, f"/{kind}/{tmdb_id}/external_ids")
+            imdb_id = ext.get("imdb_id")
+        if not imdb_id:
+            return None
+        imdb = await self.imdb.lookup({imdb_id})
+        rt = (await self.rt.lookup([(imdb_id, year)])).get(imdb_id) if self.rt.configured else self.rt.cached(imdb_id)
+        return combined_ratings({"imdb_id": imdb_id, "title": title, "original_title": title},
+                                imdb.get(imdb_id), rt)
 
     def _best_due(self) -> bool:
         ts = self.data.get("migliori_aggiornato")
@@ -741,6 +775,49 @@ class Catalog:
             res = await self._get(client, f"/tv/{tmdb_id}/external_ids")
         return res.get("tvdb_id")
 
+    # ------------------------------------------------- titoli di qualsiasi anno
+
+    async def item_for(self, kind: str, tmdb_id: int) -> dict | None:
+        """Scheda di un titolo qualsiasi (anche vecchio o non in streaming), per i suggerimenti."""
+        async with self._client() as client:
+            if not self._provider_map:
+                await self._load_providers(client)
+            d = await self._details_for(client, kind, tmdb_id)
+        if not d or not d.get("id"):
+            return None
+        platforms, link = self._platforms_of(d)
+        if kind == "movie":
+            extra = {"title": d.get("title") or d.get("original_title"), "original_title": d.get("original_title"),
+                     "date": d.get("release_date") or None, "year": (d.get("release_date") or "")[:4],
+                     "badge": "Film", "runtime": d.get("runtime")}
+        else:
+            first = d.get("first_air_date") or ""
+            extra = {"title": d.get("name") or d.get("original_name"), "original_title": d.get("original_name"),
+                     "date": first or None, "year": first[:4], "badge": "Serie TV",
+                     "seasons": d.get("number_of_seasons")}
+        return self._base_item(d, kind, platforms, link) | extra
+
+    async def search(self, kind: str, title: str, year: int | None = None) -> int | None:
+        """Id TMDB del titolo piu' rilevante con quel nome (e anno, se noto)."""
+        if not title:
+            return None
+        year_key = "year" if kind == "movie" else "first_air_date_year"
+        async with self._client() as client:
+            for params in ({year_key: year} if year else None, {}):
+                if params is None:
+                    continue
+                res = await self._get(client, f"/search/{kind}", query=title, include_adult="false", **params)
+                results = res.get("results") or []
+                if results:
+                    return results[0]["id"]
+        return None
+
+    async def recommendations(self, kind: str, tmdb_id: int) -> list[tuple[str, int]]:
+        """Titoli consigliati da TMDB per un titolo: [(tipo, id), ...]."""
+        async with self._client() as client:
+            res = await self._get(client, f"/{kind}/{tmdb_id}/recommendations")
+        return [(kind, r["id"]) for r in res.get("results", []) if r.get("id")]
+
     def find_item(self, item_id: str) -> dict | None:
         for group in ("novita", "tendenze", "prossimamente", "migliori", "bambini"):
             for it in self.data.get(group, []):
@@ -774,6 +851,23 @@ class Catalog:
             return True
         age = datetime.now(timezone.utc) - datetime.fromisoformat(ts)
         return age > timedelta(minutes=self.s.refresh_minutes)
+
+
+def combined_ratings(it: dict, imdb: tuple[float, int] | None, rt: int | None) -> dict | None:
+    """{"imdb": {...}, "rt": {...}, "media": 8.4}: la media e' in decimi (IMDb e Tomatometer/10)."""
+    out: dict = {}
+    parts: list[float] = []
+    if imdb:
+        out["imdb"] = {"voto": imdb[0], "voti": imdb[1], "url": f"https://www.imdb.com/title/{it['imdb_id']}/"}
+        parts.append(imdb[0])
+    if rt is not None:
+        name = it.get("original_title") or it.get("title") or ""
+        out["rt"] = {"voto": rt, "url": f"https://www.rottentomatoes.com/search?search={quote(name)}"}
+        parts.append(rt / 10)
+    if not parts:
+        return None
+    out["media"] = round(sum(parts) / len(parts), 1)
+    return out
 
 
 def match_platform(provider_name: str, enabled: list[str]) -> str | None:

@@ -30,6 +30,13 @@ services:
       # Facoltativi: Plex, per vedere cosa hai gia'
       PLEX_URL: ${PLEX_URL:-}
       PLEX_TOKEN: ${PLEX_TOKEN:-}
+      # Facoltativi: "Suggeriti per te" con l'AI (si possono impostare anche dal menu admin)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      # Facoltativi: Yamtrack, per i titoli gia' visti
+      YAMTRACK_URL: ${YAMTRACK_URL:-}
+      YAMTRACK_USER: ${YAMTRACK_USER:-}
+      YAMTRACK_PASSWORD: ${YAMTRACK_PASSWORD:-}
     volumes:
       - cosaguardo-data:/data
 

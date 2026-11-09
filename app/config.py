@@ -65,6 +65,13 @@ class Settings:
     admin_pin: str = field(default_factory=lambda: os.getenv("ADMIN_PIN", "").strip())
     plex_url: str = field(default_factory=lambda: os.getenv("PLEX_URL", "").strip().rstrip("/"))
     plex_token: str = field(default_factory=lambda: os.getenv("PLEX_TOKEN", "").strip())
+    # "Suggeriti per te": chiave API di Anthropic (Claude) e modello. Si possono impostare dal menu admin.
+    anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "").strip())
+    ai_model: str = field(default_factory=lambda: os.getenv("AI_MODEL", "").strip())
+    # Yamtrack (facoltativo): titoli gia' visti, per non suggerirli e capire meglio i gusti
+    yamtrack_url: str = field(default_factory=lambda: os.getenv("YAMTRACK_URL", "").strip().rstrip("/"))
+    yamtrack_user: str = field(default_factory=lambda: os.getenv("YAMTRACK_USER", "").strip())
+    yamtrack_password: str = field(default_factory=lambda: os.getenv("YAMTRACK_PASSWORD", ""))
     enabled_platforms: list[str] = field(
         default_factory=lambda: [
             p.strip()

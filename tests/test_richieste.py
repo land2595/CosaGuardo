@@ -8,6 +8,9 @@ from app import main
 from app.admin import Admin
 from app.arr import ArrError, Radarr, Requests, Sonarr
 from app.catalog import Catalog
+from app.consigli import Consigli
+from app.gusti import Gusti
+from app.yamtrack import Yamtrack
 from app.plex import Plex
 from app.config import Settings
 from tests import mock_arr, mock_tmdb
@@ -46,6 +49,9 @@ def services(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "plex", plex)
     monkeypatch.setattr(main, "requests", Requests(str(tmp_path)))
     monkeypatch.setattr(main, "admin", Admin(str(tmp_path)))
+    monkeypatch.setattr(main, "gusti", Gusti(str(tmp_path)))
+    monkeypatch.setattr(main, "consigli", Consigli(str(tmp_path)))
+    monkeypatch.setattr(main, "yamtrack", Yamtrack())
     main.apply_admin_settings()
     return TestClient(main.app)
 
@@ -57,7 +63,8 @@ def test_trailer_prefers_italian(services):
 
 
 def test_request_movie_goes_to_radarr(services):
-    assert services.get("/api/servizi").json() == {"radarr": True, "sonarr": True, "plex": True}
+    assert services.get("/api/servizi").json() == {"radarr": True, "sonarr": True, "plex": True,
+                                                   "yamtrack": False, "ai": False}
     assert services.get("/api/richieste/movie-1001").json()["stato"] == "assente"
 
     r = services.post("/api/richieste", json={"id": "movie-1001"})

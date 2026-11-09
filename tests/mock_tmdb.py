@@ -99,6 +99,14 @@ SHOWS[2104] = {"title": "Orbita", "first": (TODAY + timedelta(days=20)).isoforma
                "season": 1, "providers": [], "networks": [2552]}
 
 
+# Titoli vecchi, fuori dal catalogo delle uscite: si trovano solo cercandoli (per "Suggeriti per te")
+OLD_MOVIES = {
+    1201: {"title": "Il mare d'inverno", "date": "1986-04-10", "providers": [8]},
+    1202: {"title": "Notte a Bisanzio", "date": "1994-11-02", "providers": []},
+}
+RECOMMENDATIONS = {1001: [1201, 1002, 1202], 1002: [1202, 1001]}
+
+
 def color(seed: str) -> tuple[str, str]:
     h = hashlib.md5(seed.encode()).hexdigest()
     return f"#{h[:6]}", f"#{h[6:12]}"
@@ -176,7 +184,9 @@ def trending(page: int = 1):
 
 @app.get("/movie/{mid}")
 def movie(mid: int, language: str = "it-IT"):
-    m = MOVIES[mid]
+    if mid not in MOVIES and mid not in OLD_MOVIES:
+        return Response('{"status_code":34}', status_code=404, media_type="application/json")
+    m = MOVIES.get(mid) or OLD_MOVIES[mid]
     r = random.Random(mid)
     overview = ("Un racconto intenso tra segreti di famiglia e scelte impossibili, ambientato in una città che non dorme mai. "
                 "Quando il passato torna a bussare, nessuno potrà più nascondersi.")
@@ -245,6 +255,25 @@ def videos(kind: str, tid: int):
          "published_at": "2026-02-02T00:00:00.000Z", "name": "Trailer ufficiale italiano"},
         {"site": "Vimeo", "key": "x", "type": "Trailer", "iso_639_1": "it"},
     ] if tid % 5 else []}
+
+
+@app.get("/search/{kind}")
+def search(kind: str, query: str = "", year: int | None = None, first_air_date_year: int | None = None):
+    pool = (MOVIES | OLD_MOVIES) if kind == "movie" else SHOWS
+    wanted = year or first_air_date_year
+    found = [i for i, m in pool.items() if m["title"].lower() == query.lower()
+             and (not wanted or (m.get("date") or m.get("first") or "").startswith(str(wanted)))]
+    return {"results": [{"id": i} for i in found]}
+
+
+@app.get("/movie/{mid}/recommendations")
+def recommendations(mid: int):
+    return {"results": [{"id": i} for i in RECOMMENDATIONS.get(mid, [])]}
+
+
+@app.get("/movie/{mid}/external_ids")
+def movie_external_ids(mid: int):
+    return {"imdb_id": f"tt{mid:07d}"}
 
 
 @app.get("/tv/{sid}/external_ids")
