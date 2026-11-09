@@ -68,6 +68,11 @@ class Settings:
     # "Suggeriti per te": chiave API di Anthropic (Claude) e modello. Si possono impostare dal menu admin.
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "").strip())
     ai_model: str = field(default_factory=lambda: os.getenv("AI_MODEL", "").strip())
+    # Oppure un servizio con API compatibile OpenAI (OpenRouter, OpenAI, un server locale...): AI_PROVIDER=openai
+    ai_provider: str = field(default_factory=lambda: os.getenv("AI_PROVIDER", "").strip().lower()
+                             or ("openai" if os.getenv("OPENAI_API_KEY") and not os.getenv("ANTHROPIC_API_KEY") else "anthropic"))
+    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", "").strip())
+    openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/"))
     # Yamtrack (facoltativo): titoli gia' visti, per non suggerirli e capire meglio i gusti
     yamtrack_url: str = field(default_factory=lambda: os.getenv("YAMTRACK_URL", "").strip().rstrip("/"))
     yamtrack_user: str = field(default_factory=lambda: os.getenv("YAMTRACK_USER", "").strip())

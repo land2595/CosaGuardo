@@ -746,13 +746,14 @@ dialog.admin { width: min(640px, calc(100vw - 24px)); }
 .a-tag.on { border-color: var(--gold); background: linear-gradient(145deg, #f3c4632e, #f3c4630c), var(--panel); color: var(--gold); }
 .a-tag.on i { background: linear-gradient(180deg, #ffe2a0, var(--gold)); color: #1a1206; border-color: transparent; }
 .a-newtag { display: flex; gap: 8px; align-items: center; }
-.a-newtag input, .a-field select, .a-pinchange input {
+.a-newtag input, .a-field select, .a-field input, .a-pinchange input {
   min-width: 0; padding: 9px 12px; border-radius: 10px; font: inherit; font-size: 14px; color: var(--text);
   background: #0b0b0e; border: 1px solid var(--line); outline: none; transition: border-color .2s;
 }
 .a-newtag input { width: 180px; }
-.a-newtag input:focus, .a-field select:focus, .a-pinchange input:focus { border-color: var(--gold); }
+.a-newtag input:focus, .a-field select:focus, .a-field input:focus, .a-pinchange input:focus { border-color: var(--gold); }
 .a-field select { width: 100%; cursor: pointer; }
+.a-field input { width: 100%; }
 .a-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
 .a-save { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 20px; }
 .a-save .a-msg { margin: 0; }
@@ -925,3 +926,9 @@ a.score:hover { border-color: var(--gold); transform: translateY(-1px); }
   .stars button { font-size: 30px; }
   .score b { font-size: 22px; }
 }
+
+.a-seg { margin-top: 14px; flex-wrap: wrap; }
+.a-seg button { font-size: 13.5px; }
+.a-tag:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+#a-ai-list { margin-top: 10px; }
+#a-visti-tags { margin-top: 14px; }

@@ -1,7 +1,9 @@
 """La sezione "Suggeriti per te".
 
-Con una chiave API di Anthropic i suggerimenti li sceglie Claude, partendo da mi piace, voti e
-note (e dai titoli gia' visti su Yamtrack), pescando tra film e serie degli ultimi 50 anni.
+I suggerimenti li sceglie un modello AI, partendo da mi piace, voti e note (e dai titoli gia'
+visti su Yamtrack o Plex), pescando tra film e serie degli ultimi 50 anni. Il modello puo' essere
+Claude (API di Anthropic) oppure uno qualsiasi raggiungibile con un'API compatibile con quella
+di OpenAI (OpenRouter, OpenAI, un server locale...).
 Ogni titolo suggerito viene poi cercato su TMDB per avere locandina, trama e piattaforme italiane.
 Senza chiave si usano i "consigliati" di TMDB dei titoli che ti sono piaciuti.
 """
@@ -15,10 +17,13 @@ from collections import Counter
 from datetime import date, datetime, timezone
 
 import anthropic
+import httpx
 
 log = logging.getLogger("consigli")
 
+PROVIDERS = ("anthropic", "openai")
 DEFAULT_MODEL = "claude-opus-5-5"
+DEFAULT_OPENAI_URL = "https://openrouter.ai/api/v1"
 MODELS = [
     {"id": "claude-opus-5-5", "nome": "Claude Opus 5.5 (consigliato)"},
     {"id": "claude-sonnet-5-5", "nome": "Claude Sonnet 5.5 (piu' economico)"},
@@ -90,7 +95,7 @@ def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str]
     rated = [v for v in visti.values() if v.get("voto") is not None]
     rated.sort(key=lambda v: -v["voto"])
     if rated:
-        parts.append("Altri titoli che ho visto, con il mio voto da 0 a 10 (dal mio tracker Yamtrack):\n" +
+        parts.append("Altri titoli che ho visto, con il mio voto da 0 a 10 (da Yamtrack o Plex):\n" +
                      "\n".join(f"- {v['titolo']}: {v['voto']:g}/10" for v in rated[:120]))
     seen = [v["titolo"] for v in visti.values() if v.get("voto") is None and v.get("titolo")]
     if seen:
@@ -109,11 +114,31 @@ def build_prompt(gusti: list[dict], visti: dict[str, dict], platforms: list[str]
     return "\n\n".join(parts)
 
 
+def _json_from_text(text: str) -> list[dict]:
+    """La lista "suggerimenti" da una risposta JSON (anche dentro un blocco ```json)."""
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start:
+        raise AiError("Risposta del modello non leggibile.")
+    try:
+        items = json.loads(text[start:end + 1])["suggerimenti"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise AiError("Risposta del modello non leggibile.") from e
+    if not isinstance(items, list):
+        raise AiError("Risposta del modello non leggibile.")
+    return items
+
+
 class Consigli:
-    def __init__(self, data_dir: str, api_key: str = "", model: str = ""):
+    def __init__(self, data_dir: str, api_key: str = "", model: str = "", provider: str = "anthropic",
+                 base_url: str = ""):
         self.file = os.path.join(data_dir, "suggeriti.json")
+        self.provider = provider if provider in PROVIDERS else "anthropic"
         self.api_key = api_key.strip()
-        self.model = model.strip() or DEFAULT_MODEL
+        self.base_url = (base_url.strip() or DEFAULT_OPENAI_URL).rstrip("/")
+        self.model = model.strip() or (DEFAULT_MODEL if self.provider == "anthropic" else "")
         self.running = False
         self.data: dict = {"titoli": [], "generato": None, "gusti": None, "fonte": None, "errore": None}
         self._last_try = 0.0
@@ -125,7 +150,12 @@ class Consigli:
 
     @property
     def configured(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key and self.model)
+
+    @property
+    def label(self) -> str:
+        """Chi sceglie i suggerimenti, per la pagina."""
+        return "Claude" if self.provider == "anthropic" else (self.model or "AI")
 
     def _client(self, key: str | None = None) -> anthropic.AsyncAnthropic:
         return anthropic.AsyncAnthropic(api_key=key or self.api_key, timeout=300, max_retries=2)
@@ -148,8 +178,11 @@ class Consigli:
             return AiError("Anthropic non raggiungibile: controlla la connessione del server.")
         return AiError(str(e))
 
-    async def verify(self, key: str, model: str) -> None:
+    async def verify(self, key: str, model: str, provider: str | None = None, base_url: str | None = None) -> None:
         """Controlla chiave e modello senza consumare token."""
+        if (provider or self.provider) == "openai":
+            await self._verify_openai(key, model, (base_url or self.base_url).rstrip("/"))
+            return
         try:
             async with self._client(key) as client:
                 await client.models.retrieve(model)
@@ -157,7 +190,12 @@ class Consigli:
             raise self._error(e) from e
 
     async def ask(self, prompt: str) -> list[dict]:
-        """Chiede i suggerimenti a Claude; restituisce la lista grezza."""
+        """Chiede i suggerimenti al modello scelto; restituisce la lista grezza."""
+        if self.provider == "openai":
+            return await self._ask_openai(prompt)
+        return await self._ask_claude(prompt)
+
+    async def _ask_claude(self, prompt: str) -> list[dict]:
         extra: dict = {}
         if self.model in FALLBACK_MODELS:
             # Se il modello rifiuta la richiesta, l'API la ripete su un altro modello
@@ -179,10 +217,96 @@ class Consigli:
         if response.stop_reason == "max_tokens":
             raise AiError("Risposta troppo lunga, interrotta: riprova.")
         text = next((b.text for b in response.content if b.type == "text"), "")
+        return _json_from_text(text)
+
+    # ------------------------------------------- API compatibili con OpenAI
+
+    def _http(self, key: str, base_url: str) -> httpx.AsyncClient:
+        return httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(300, connect=15), headers={
+            "Authorization": f"Bearer {key}",
+            # OpenRouter mostra il nome dell'app nelle statistiche di utilizzo
+            "HTTP-Referer": "https://github.com/land2595/CosaGuardo", "X-Title": "CosaGuardo",
+        })
+
+    @staticmethod
+    def _http_error(r: httpx.Response) -> AiError:
         try:
-            return json.loads(text)["suggerimenti"]
-        except (ValueError, KeyError, TypeError) as e:
-            raise AiError("Risposta del modello non leggibile.") from e
+            body = r.json()
+            detail = (body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else body.get("error")
+        except ValueError:
+            detail = None
+        detail = str(detail or r.text[:200] or r.status_code)
+        if r.status_code == 401:
+            return AiError("Chiave API non valida.")
+        if r.status_code == 402:
+            return AiError("Credito esaurito sul servizio AI: ricaricalo e riprova.")
+        if r.status_code == 404:
+            return AiError(f"Modello o indirizzo non trovato: {detail}")
+        if r.status_code == 429:
+            return AiError("Troppe richieste al servizio AI: riprova tra qualche minuto.")
+        return AiError(f"Errore del servizio AI ({r.status_code}): {detail}")
+
+    async def list_models(self, key: str | None = None, base_url: str | None = None) -> list[str]:
+        """I modelli offerti dal servizio (GET /models)."""
+        try:
+            async with self._http(key or self.api_key, (base_url or self.base_url).rstrip("/")) as client:
+                r = await client.get("/models")
+        except httpx.HTTPError as e:
+            raise AiError(f"Servizio AI non raggiungibile: {e}") from e
+        if r.status_code != 200:
+            raise self._http_error(r)
+        try:
+            return sorted(m["id"] for m in r.json().get("data", []) if m.get("id"))
+        except (ValueError, TypeError, KeyError) as e:
+            raise AiError("Elenco dei modelli non leggibile: controlla l'indirizzo.") from e
+
+    async def _verify_openai(self, key: str, model: str, base_url: str) -> None:
+        if not model:
+            raise AiError("Scegli il modello da usare.")
+        if "openrouter.ai" in base_url:
+            # Su OpenRouter l'elenco dei modelli e' pubblico: la chiave si controlla a parte
+            try:
+                async with self._http(key, base_url) as client:
+                    r = await client.get("/key")
+            except httpx.HTTPError as e:
+                raise AiError(f"OpenRouter non raggiungibile: {e}") from e
+            if r.status_code != 200:
+                raise self._http_error(r)
+        models = await self.list_models(key, base_url)
+        if models and model not in models:
+            raise AiError(f"Il modello «{model}» non c'e' tra quelli offerti da {base_url}.")
+
+    async def _ask_openai(self, prompt: str) -> list[dict]:
+        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
+        structured = {"type": "json_schema", "json_schema": {"name": "suggerimenti", "strict": True, "schema": SCHEMA}}
+        try:
+            async with self._http(self.api_key, self.base_url) as client:
+                r = await client.post("/chat/completions", json={
+                    "model": self.model, "messages": messages, "response_format": structured})
+                unsupported = any(w in r.text.lower() for w in ("response_format", "json_schema", "structured"))
+                if r.status_code in (400, 422) and unsupported:
+                    # Modello senza risposte con schema: si chiede il JSON nel testo
+                    plain = messages[:1] + [{"role": "user", "content": prompt + (
+                        "\n\nRispondi solo con un oggetto JSON, senza altro testo, in questa forma: "
+                        '{"suggerimenti": [{"titolo": "...", "titolo_originale": "...", "anno": 1999, '
+                        '"tipo": "film" o "serie", "motivo": "..."}]}')}]
+                    r = await client.post("/chat/completions", json={"model": self.model, "messages": plain})
+        except httpx.HTTPError as e:
+            raise AiError(f"Servizio AI non raggiungibile: {e}") from e
+        if r.status_code != 200:
+            raise self._http_error(r)
+        try:
+            choice = r.json()["choices"][0]
+        except (ValueError, KeyError, IndexError, TypeError) as e:
+            raise AiError("Risposta del servizio AI non leggibile.") from e
+        if choice.get("finish_reason") == "length":
+            raise AiError("Risposta troppo lunga, interrotta: riprova.")
+        content = (choice.get("message") or {}).get("content")
+        if isinstance(content, list):  # alcuni servizi restituiscono blocchi di testo
+            content = "".join(c.get("text", "") for c in content if isinstance(c, dict))
+        if not content:
+            raise AiError("Il modello non ha risposto a questa richiesta.")
+        return _json_from_text(content)
 
     # ------------------------------------------------------- generazione
 
@@ -193,6 +317,8 @@ class Consigli:
             return False
         if self.data.get("fonte") != ("ai" if self.configured else "tmdb"):
             return True
+        if self.configured and self.data.get("modello") != self.label:
+            return True  # cambiato modello o servizio
         return not self.data.get("titoli") or self.data.get("gusti") != gusti_modified
 
     async def generate(self, catalog, gusti, visti: dict[str, dict], platforms: list[str]) -> None:
@@ -213,7 +339,8 @@ class Consigli:
                 items = await self._from_tmdb(catalog, gusti.items, exclude)
                 source = "tmdb"
             await catalog._add_ratings(items)
-            self.data = {"titoli": items, "generato": _now(), "gusti": modified, "fonte": source, "errore": None}
+            self.data = {"titoli": items, "generato": _now(), "gusti": modified, "fonte": source, "errore": None,
+                         "modello": self.label if source == "ai" else None}
             log.info("Suggeriti per te: %d titoli (%s)", len(items), source)
         except Exception as e:  # noqa: BLE001 - l'errore viene mostrato nella pagina
             msg = str(e) if isinstance(e, AiError) else f"Suggerimenti non riusciti: {e}"

@@ -27,11 +27,14 @@ services:
       SONARR_ROOT_FOLDER: ${SONARR_ROOT_FOLDER:-}
       # Facoltativo: PIN del menu admin (se vuoto lo scegli dalla pagina)
       ADMIN_PIN: ${ADMIN_PIN:-}
-      # Facoltativi: Plex, per vedere cosa hai gia'
+      # Facoltativi: Plex, per vedere cosa hai gia' (e i titoli gia' visti)
       PLEX_URL: ${PLEX_URL:-}
       PLEX_TOKEN: ${PLEX_TOKEN:-}
       # Facoltativi: "Suggeriti per te" con l'AI (si possono impostare anche dal menu admin)
+      AI_PROVIDER: ${AI_PROVIDER:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       AI_MODEL: ${AI_MODEL:-}
       # Facoltativi: Yamtrack, per i titoli gia' visti
       YAMTRACK_URL: ${YAMTRACK_URL:-}

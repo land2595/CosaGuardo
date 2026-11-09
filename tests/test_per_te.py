@@ -12,8 +12,9 @@ from app.catalog import Catalog, combined_ratings
 from app.config import Settings
 from app.consigli import Consigli, build_prompt
 from app.gusti import Gusti
+from app.plex import Plex
 from app.yamtrack import Yamtrack, YamtrackError, parse_export
-from tests import mock_tmdb, mock_yamtrack
+from tests import mock_arr, mock_tmdb, mock_yamtrack
 
 
 def _mock_client(app, **kw):
@@ -37,6 +38,10 @@ def app_client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "gusti", Gusti(str(tmp_path)))
     monkeypatch.setattr(main, "consigli", Consigli(str(tmp_path)))
     monkeypatch.setattr(main, "yamtrack", Yamtrack())
+    plex = Plex("http://plex", mock_arr.PLEX_TOKEN)
+    plex._client = _mock_client(mock_arr.plex, headers={"X-Plex-Token": mock_arr.PLEX_TOKEN})
+    monkeypatch.setattr(main, "plex", plex)
+    main.apply_ai_settings()
     return TestClient(main.app)
 
 
@@ -176,7 +181,7 @@ def test_suggestions_with_ai(app_client, monkeypatch):
 
     monkeypatch.setattr(Consigli, "ask", fake_ask)
 
-    async def fake_verify(self, key, model):
+    async def fake_verify(self, key, model, provider=None, base_url=None):
         if key != "sk-ant-buona-0123456789":
             from app.consigli import AiError
             raise AiError("Chiave API di Anthropic non valida.")
@@ -186,7 +191,9 @@ def test_suggestions_with_ai(app_client, monkeypatch):
     assert app_client.put("/api/admin/ai", headers=h, json={"chiave": "sbagliata"}).status_code == 400
     r = app_client.put("/api/admin/ai", headers=h, json={"chiave": "sk-ant-buona-0123456789",
                                                           "modello": "claude-sonnet-5-5"}).json()
-    assert r["configurata"] and r["modello"] == "claude-sonnet-5-5" and "0123456789" not in r["chiave"]
+    a = r["anthropic"]
+    assert r["servizio"] == "anthropic" and r["attivo"]
+    assert a["configurata"] and a["modello"] == "claude-sonnet-5-5" and "0123456789" not in a["chiave"]
     assert main.consigli.configured
 
     app_client.put("/api/gusti/movie-1001", json={"mi_piace": True, "note": "Malinconia e mare"})
@@ -233,3 +240,113 @@ def test_ask_sends_structured_request(tmp_path, monkeypatch):
     assert "server-side-fallback-2026-07-01" in sent["beta"]
     assert body["output_config"]["format"]["type"] == "json_schema"
     assert body["messages"] == [{"role": "user", "content": "I miei gusti"}]
+
+
+# ------------------------------------------------- visti da Plex e Yamtrack
+
+def test_watched_from_plex_yamtrack_or_both(app_client):
+    mock_arr.plex.state.library["movie"][0]["userRating"] = 8.0
+    h = _login(app_client)
+    # Solo Plex (Yamtrack non collegato): film visto con il voto di Plex, serie iniziata
+    d = app_client.get("/api/visti").json()
+    assert d["fonti"] == ["plex"]
+    assert d["titoli"]["movie-1002"] == {"titolo": "La notte di Roma", "stato": "Completed", "voto": 8.0, "fonti": ["plex"]}
+    assert d["titoli"]["tv-2003"]["stato"] == "In progress"
+    assert app_client.get("/api/servizi").json()["visti"] is True
+
+    # Plex + Yamtrack: lo stato e il voto di Yamtrack prevalgono, le fonti si sommano
+    assert app_client.put("/api/admin/yamtrack", headers=h, json={"url": "http://yamtrack:8000", "utente": "federico",
+                                                                    "password": "segreta"}).status_code == 200
+    t = app_client.get("/api/visti").json()["titoli"]
+    assert t["movie-1002"] == {"titolo": "Oltre il confine", "stato": "Completed", "voto": 4.0, "fonti": ["yamtrack", "plex"]}
+    assert t["tv-2003"]["fonti"] == ["plex"] and t["tv-1396"]["fonti"] == ["yamtrack"]
+
+    # Solo Yamtrack
+    r = app_client.put("/api/admin/visti", headers=h, json={"fonti": ["yamtrack"]}).json()
+    assert r["attive"] == ["yamtrack"] and r["collegate"] == {"yamtrack": True, "plex": True}
+    t = app_client.get("/api/visti").json()["titoli"]
+    assert "tv-2003" not in t and t["movie-1002"]["fonti"] == ["yamtrack"]
+
+    # Nessuna fonte
+    app_client.put("/api/admin/visti", headers=h, json={"fonti": []})
+    assert app_client.get("/api/visti").json()["titoli"] == {}
+    assert app_client.get("/api/servizi").json()["visti"] is False
+    mock_arr.plex.state.library["movie"][0].pop("userRating")
+
+
+# ------------------------------------------------ API compatibili OpenAI
+
+def _openai_mock(seen: dict, structured_ok: bool = True):
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
+
+    api = FastAPI()
+
+    @api.get("/api/v1/key")
+    def key(request: Request):
+        if request.headers.get("authorization") != "Bearer sk-or-buona":
+            return JSONResponse({"error": {"message": "No auth credentials found", "code": 401}}, status_code=401)
+        return {"data": {"label": "test"}}
+
+    @api.get("/api/v1/models")
+    def models():
+        return {"data": [{"id": "openai/gpt-test"}, {"id": "google/gemini-test"}]}
+
+    @api.post("/api/v1/chat/completions")
+    async def chat(request: Request):
+        body = await request.json()
+        seen.setdefault("bodies", []).append(body)
+        if "response_format" in body and not structured_ok:
+            return JSONResponse({"error": {"message": "response_format json_schema is not supported"}}, status_code=400)
+        text = '{"suggerimenti": [{"titolo": "Il mare d\'inverno", "titolo_originale": "Il mare d\'inverno", ' \
+               '"anno": 1986, "tipo": "film", "motivo": "Malinconia."}]}'
+        if "response_format" not in body:
+            text = "Ecco i titoli:\n```json\n" + text + "\n```"
+        return {"choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]}
+
+    return api
+
+
+def test_openai_compatible_provider(app_client, monkeypatch):
+    seen: dict = {}
+    api = _openai_mock(seen)
+    monkeypatch.setattr(Consigli, "_http", lambda self, key, base_url: httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api), base_url=base_url, headers={"Authorization": f"Bearer {key}"}))
+    h = _login(app_client)
+
+    # Elenco dei modelli per sceglierli dal menu
+    r = app_client.post("/api/admin/ai/modelli", headers=h, json={"url": "https://openrouter.ai/api/v1"})
+    assert r.json()["modelli"] == ["google/gemini-test", "openai/gpt-test"]
+
+    bad = {"servizio": "openai", "chiave": "sk-or-sbagliata", "modello": "openai/gpt-test"}
+    assert app_client.put("/api/admin/ai", headers=h, json=bad).json()["detail"] == "Chiave API non valida."
+    wrong_model = {"servizio": "openai", "chiave": "sk-or-buona", "modello": "openai/inesistente"}
+    assert "non c'e'" in app_client.put("/api/admin/ai", headers=h, json=wrong_model).json()["detail"]
+    r = app_client.put("/api/admin/ai", headers=h, json={"servizio": "openai", "chiave": "sk-or-buona",
+                                                          "modello": "openai/gpt-test"}).json()
+    assert r["servizio"] == "openai" and r["attivo"] and r["openai"]["url"] == "https://openrouter.ai/api/v1"
+    assert main.consigli.provider == "openai" and main.consigli.label == "openai/gpt-test"
+
+    app_client.put("/api/gusti/movie-1001", json={"mi_piace": True})
+    asyncio.run(main.consigli.generate(main.catalog, main.gusti, {}, ["Netflix"]))
+    d = app_client.get("/api/suggeriti").json()
+    assert d["fonte"] == "ai" and d["modello"] == "openai/gpt-test" and d["errore"] is None
+    assert [it["id"] for it in d["titoli"]] == ["movie-1201"]
+    body = seen["bodies"][-1]
+    assert body["model"] == "openai/gpt-test" and body["response_format"]["type"] == "json_schema"
+    assert body["messages"][0]["role"] == "system"
+
+    # Si torna a Claude senza perdere le impostazioni di OpenRouter
+    r = app_client.put("/api/admin/ai", headers=h, json={"servizio": "anthropic"}).json()
+    assert r["servizio"] == "anthropic" and not r["attivo"] and r["openai"]["modello"] == "openai/gpt-test"
+
+
+def test_openai_without_structured_output(tmp_path, monkeypatch):
+    seen: dict = {}
+    api = _openai_mock(seen, structured_ok=False)
+    c = Consigli(str(tmp_path), api_key="k", model="local/model", provider="openai", base_url="http://local/api/v1")
+    monkeypatch.setattr(c, "_http", lambda key, base_url: httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api), base_url=base_url))
+    out = asyncio.run(c.ask("gusti"))
+    assert out[0]["anno"] == 1986
+    assert len(seen["bodies"]) == 2 and "response_format" not in seen["bodies"][1]
