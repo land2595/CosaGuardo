@@ -16,6 +16,9 @@ from pydantic import BaseModel
 from .admin import SERVICES, Admin, PinError
 from .arr import ASSENTE, SCONOSCIUTO, ArrError, Radarr, Requests, Sonarr
 from .catalog import CATEGORIES, Catalog, TMDBError
+from .consigli import DEFAULT_MODEL, MODELS, AiError, Consigli
+from .gusti import Gusti, GustiError
+from .yamtrack import Yamtrack, YamtrackError
 from .plex import Plex, PlexError
 from .rotten import OmdbError
 from .config import settings
@@ -33,6 +36,10 @@ sonarr = Sonarr(settings.sonarr_url, settings.sonarr_api_key,
 plex = Plex(settings.plex_url, settings.plex_token)
 requests = Requests(settings.data_dir)
 admin = Admin(settings.data_dir, settings.admin_pin)
+gusti = Gusti(settings.data_dir)
+consigli = Consigli(settings.data_dir, settings.anthropic_api_key, settings.ai_model)
+yamtrack = Yamtrack(settings.yamtrack_url, settings.yamtrack_user, settings.yamtrack_password)
+_tasks: set[asyncio.Task] = set()
 STATIC = Path(__file__).parent / "static"
 
 
@@ -198,9 +205,15 @@ async def _plex_find(kind: str, tmdb_id: int, tvdb_id: int | None = None) -> dic
     return await _safe(plex.find(kind, tmdb_id, tvdb_id))
 
 
+def _find(item_id: str) -> dict | None:
+    """Un titolo del catalogo, dei suggerimenti, dei giudizi o delle richieste."""
+    return catalog.find_item(item_id) or consigli.find(item_id) or gusti.get(item_id) or requests.get(item_id)
+
+
 @app.get("/api/servizi")
 def get_servizi():
-    return {"radarr": radarr.configured, "sonarr": sonarr.configured, "plex": plex.configured}
+    return {"radarr": radarr.configured, "sonarr": sonarr.configured, "plex": plex.configured,
+            "yamtrack": yamtrack.configured, "ai": consigli.configured}
 
 
 @app.get("/api/plex")
@@ -242,7 +255,7 @@ async def get_richieste():
 
 @app.get("/api/richieste/{item_id}")
 async def get_richiesta(item_id: str):
-    item = requests.get(item_id) or catalog.find_item(item_id)
+    item = requests.get(item_id) or _find(item_id)
     if not item:
         raise HTTPException(404, "Titolo non trovato.")
     svc = _service(item["type"])
@@ -299,7 +312,7 @@ class NuovaRichiesta(BaseModel):
 
 @app.post("/api/richieste")
 async def post_richiesta(body: NuovaRichiesta):
-    item = catalog.find_item(body.id) or requests.get(body.id)
+    item = _find(body.id)
     if not item:
         raise HTTPException(404, "Titolo non trovato.")
     svc = _service(item["type"])
@@ -320,6 +333,104 @@ async def post_richiesta(body: NuovaRichiesta):
     requests.add(item, tvdb_id=arr_id if item["type"] == "tv" else None,
                  seasons=body.stagioni if item["type"] == "tv" else None)
     return {"stato": stato, "servizio": svc.name}
+
+
+# --------------------------------------------------------------------- voti
+
+@app.get("/api/voti/{kind}/{tmdb_id}")
+async def get_voti(kind: str, tmdb_id: int):
+    """Voti IMDb e Rotten Tomatoes di un titolo, con la media."""
+    if kind not in ("movie", "tv"):
+        raise HTTPException(404)
+    item = _find(f"{kind}-{tmdb_id}") or {}
+    try:
+        voti = await catalog.ratings(kind, tmdb_id, item.get("imdb_id"),
+                                     item.get("original_title") or item.get("title") or "",
+                                     int(item.get("year") or 0))
+    except TMDBError as e:
+        raise HTTPException(502, str(e)) from e
+    return {"voti": voti}
+
+
+# -------------------------------------------------------- gusti e per te
+
+class Gusto(BaseModel):
+    mi_piace: bool | None = None
+    voto: int | None = None
+    note: str | None = None
+    scheda: dict | None = None
+
+
+@app.get("/api/gusti")
+def get_gusti():
+    return {"titoli": gusti.items}
+
+
+@app.put("/api/gusti/{item_id}")
+def put_gusto(item_id: str, body: Gusto):
+    values = {k: getattr(body, k) for k in ("mi_piace", "voto", "note") if k in body.model_fields_set}
+    if "mi_piace" in values and values["mi_piace"] is None:
+        values["mi_piace"] = False
+    scheda = _find(item_id) or body.scheda
+    try:
+        return {"gusto": gusti.update(item_id, scheda, values)}
+    except GustiError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+async def _visti() -> dict[str, dict]:
+    try:
+        return await yamtrack.watched()
+    except YamtrackError:
+        return {}
+
+
+@app.get("/api/visti")
+async def get_visti():
+    """I titoli gia' presenti su Yamtrack."""
+    titoli = await _visti()
+    return {"configurato": yamtrack.configured, "errore": yamtrack.error, "titoli": titoli}
+
+
+def _has_tastes() -> bool:
+    return bool(gusti.items) or (consigli.configured and yamtrack.configured)
+
+
+async def _generate() -> None:
+    names = [p["name"] for p in catalog.data.get("piattaforme", {}).values()]
+    await consigli.generate(catalog, gusti, await _visti(), names)
+
+
+def _start_generation() -> None:
+    task = asyncio.create_task(_generate())
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+
+
+def _suggeriti_state() -> dict:
+    d = consigli.data
+    return {"titoli": d.get("titoli", []), "generato": d.get("generato"), "fonte": d.get("fonte"),
+            "errore": d.get("errore"), "in_corso": consigli.running, "ai": consigli.configured,
+            "yamtrack": yamtrack.configured, "gusti": len(gusti.items),
+            "da_aggiornare": bool(d.get("generato")) and d.get("gusti") != gusti.modified}
+
+
+@app.get("/api/suggeriti")
+async def get_suggeriti():
+    """"Suggeriti per te": se i gusti sono cambiati, i suggerimenti si ricalcolano in background."""
+    if consigli.needs_update(gusti.modified, _has_tastes()):
+        _start_generation()
+        return _suggeriti_state() | {"in_corso": True}
+    return _suggeriti_state()
+
+
+@app.post("/api/suggeriti/aggiorna")
+async def post_suggeriti():
+    if not _has_tastes():
+        raise HTTPException(400, "Metti qualche mi piace o un voto: servono per capire i tuoi gusti.")
+    if not consigli.running:
+        _start_generation()
+    return _suggeriti_state() | {"in_corso": True}
 
 
 # -------------------------------------------------------------- menu admin
@@ -476,6 +587,105 @@ async def put_admin_omdb(body: ChiaveOmdb, _: str = Depends(require_admin)):
     if not catalog.refreshing:
         asyncio.create_task(catalog.refresh())
     return _omdb_state()
+
+
+def _mask(key: str) -> str:
+    return f"{key[:7]}••••{key[-4:]}" if len(key) > 14 else ("••••" if key else "")
+
+
+def apply_ai_settings() -> None:
+    """Chiave e modello del menu admin prevalgono su ANTHROPIC_API_KEY e AI_MODEL."""
+    consigli.api_key = admin.data.get("ai_chiave") or settings.anthropic_api_key
+    consigli.model = admin.data.get("ai_modello") or settings.ai_model or DEFAULT_MODEL
+
+
+apply_ai_settings()
+
+
+def _ai_state() -> dict:
+    key = consigli.api_key
+    return {"configurata": bool(key), "da_env": bool(settings.anthropic_api_key) and key == settings.anthropic_api_key,
+            "chiave": _mask(key), "modello": consigli.model, "modelli": MODELS,
+            "errore": consigli.data.get("errore")}
+
+
+@app.get("/api/admin/ai")
+def get_admin_ai(_: str = Depends(require_admin)):
+    return _ai_state()
+
+
+class AiImpostazioni(BaseModel):
+    chiave: str | None = None   # None = lascia quella attuale, "" = rimuovi
+    modello: str | None = None
+
+
+@app.put("/api/admin/ai")
+async def put_admin_ai(body: AiImpostazioni, _: str = Depends(require_admin)):
+    key = consigli.api_key if body.chiave is None else body.chiave.strip()
+    model = (body.modello or consigli.model).strip()
+    if key:
+        try:
+            await consigli.verify(key, model)
+        except AiError as e:
+            raise HTTPException(400, str(e)) from e
+    if body.chiave is not None:
+        admin.set_value("ai_chiave", key)
+    admin.set_value("ai_modello", model)
+    apply_ai_settings()
+    consigli.data["errore"] = None
+    return _ai_state()
+
+
+def apply_yamtrack_settings() -> None:
+    conf = admin.data.get("yamtrack") or {}
+    if conf.get("url"):
+        yamtrack.configure(conf["url"], conf.get("utente", ""), conf.get("password", ""))
+    else:
+        yamtrack.configure(settings.yamtrack_url, settings.yamtrack_user, settings.yamtrack_password)
+
+
+apply_yamtrack_settings()
+
+
+def _yamtrack_state(titoli: int | None = None) -> dict:
+    from_admin = bool((admin.data.get("yamtrack") or {}).get("url"))
+    return {"configurato": yamtrack.configured, "url": yamtrack.url, "utente": yamtrack.user,
+            "da_env": yamtrack.configured and not from_admin, "errore": yamtrack.error, "titoli": titoli}
+
+
+@app.get("/api/admin/yamtrack")
+async def get_admin_yamtrack(_: str = Depends(require_admin)):
+    titoli = len(await _visti()) if yamtrack.configured else None
+    return _yamtrack_state(titoli)
+
+
+class YamtrackImpostazioni(BaseModel):
+    url: str
+    utente: str = ""
+    password: str | None = None  # None o vuota = lascia quella salvata
+
+
+@app.put("/api/admin/yamtrack")
+async def put_admin_yamtrack(body: YamtrackImpostazioni, _: str = Depends(require_admin)):
+    url = body.url.strip().rstrip("/")
+    if not url:
+        admin.set_value("yamtrack", {})
+        apply_yamtrack_settings()
+        return _yamtrack_state()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "L'indirizzo deve iniziare con http:// o https://")
+    password = body.password or (admin.data.get("yamtrack") or {}).get("password") or ""
+    test = Yamtrack(url, body.utente, password)
+    if not test.configured:
+        raise HTTPException(400, "Servono indirizzo, utente e password di Yamtrack.")
+    try:
+        titoli = await test.watched(force=True)
+    except YamtrackError as e:
+        raise HTTPException(400, str(e)) from e
+    admin.set_value("yamtrack", {"url": url, "utente": body.utente.strip(), "password": password})
+    apply_yamtrack_settings()
+    yamtrack._cache, yamtrack._ts = titoli, test._ts
+    return _yamtrack_state(len(titoli))
 
 
 class NuovoTag(BaseModel):

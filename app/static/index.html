@@ -22,6 +22,7 @@
       <button role="tab" class="tab" data-view="novita">Ultime uscite</button>
       <button role="tab" class="tab" data-view="prossimamente">Prossimamente</button>
       <button role="tab" class="tab" data-view="migliori">I migliori</button>
+      <button role="tab" class="tab" data-view="per_te">Suggeriti per te</button>
       <button role="tab" class="tab" data-view="tendenze">Di tendenza in Italia</button>
       <button role="tab" class="tab" data-view="bambini">Bambini</button>
       <button role="tab" class="tab" data-view="richieste" hidden>Le mie richieste</button>
@@ -98,11 +99,34 @@
         <h2 id="d-title"></h2>
         <p class="d-orig" id="d-orig"></p>
         <p class="d-meta" id="d-meta"></p>
+        <div class="d-scores" id="d-scores" hidden></div>
+        <div class="d-why" id="d-why" hidden></div>
         <p class="d-overview" id="d-overview"></p>
         <div class="ticket">
           <span class="ticket-label">Lo trovi su</span>
           <div class="badges" id="d-platforms"></div>
         </div>
+        <section class="taste" id="d-taste" aria-label="Il tuo giudizio">
+          <div class="taste-head">
+            <span class="ticket-label">Il tuo giudizio</span>
+            <span class="taste-seen" id="d-seen" hidden></span>
+          </div>
+          <div class="taste-row">
+            <button type="button" class="heart" id="d-like" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-10-9.3C.4 8.4 2.4 4.5 6.1 4.1c2.2-.2 4 .9 5.9 3.1 1.9-2.2 3.7-3.3 5.9-3.1 3.7.4 5.7 4.3 4.1 7.6C19.5 16.4 12 21 12 21z"/></svg>
+              <span>Mi piace</span>
+            </button>
+            <div class="stars" id="d-stars" role="radiogroup" aria-label="Il tuo voto da 0 a 5 stelle"></div>
+          </div>
+          <label class="taste-note">
+            <span class="sr">Note</span>
+            <textarea id="d-note" rows="2" maxlength="2000" placeholder="Cosa ti è piaciuto in particolare? (regia, personaggi, atmosfera, finale…) Le note aiutano a scegliere i suggerimenti per te."></textarea>
+          </label>
+          <div class="taste-foot">
+            <button type="button" class="a-link" id="d-note-save" hidden>Salva le note</button>
+            <span class="taste-msg" id="d-taste-msg" role="status"></span>
+          </div>
+        </section>
         <div class="d-status" id="d-status" hidden></div>
         <div class="d-actions" id="d-actions">
           <button class="btn-gold" id="d-trailer" hidden>▶ Guarda il trailer</button>
@@ -160,6 +184,8 @@
         <p class="a-msg" id="a-save-msg" role="status"></p>
       </div>
       <section class="a-section" id="a-omdb"></section>
+      <section class="a-section" id="a-ai"></section>
+      <section class="a-section" id="a-yamtrack"></section>
       <details class="a-section a-pinchange" id="a-pinchange">
         <summary>Cambia il PIN</summary>
         <form id="a-pin-form">

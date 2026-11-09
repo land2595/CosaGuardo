@@ -1,4 +1,4 @@
-const VIEWS = ["novita", "prossimamente", "migliori", "tendenze", "bambini"];
+const VIEWS = ["novita", "prossimamente", "migliori", "per_te", "tendenze", "bambini"];
 const savedView = localGet("view") === "da_non_perdere" ? "migliori" : localGet("view");
 const state = {
   view: VIEWS.includes(savedView) ? savedView : "novita",
@@ -14,6 +14,9 @@ const state = {
   seasons: null,
   requests: [],
   requestsLoaded: false,
+  gusti: new Map(),
+  visti: {},
+  suggeriti: null,
 };
 
 const $ = (s) => document.querySelector(s);
@@ -101,7 +104,7 @@ function filtered(view = state.view, skip = "") {
   const q = state.q.toLowerCase();
   return items.filter((i) =>
     (state.tipo === "all" || i.type === state.tipo) &&
-    (skip === "platforms" || !state.platforms.size || i.platforms.some((p) => state.platforms.has(p))) &&
+    (skip === "platforms" || !state.platforms.size || (i.platforms || []).some((p) => state.platforms.has(p))) &&
     (skip === "categoria" || !state.categoria || (i.categorie || []).includes(state.categoria)) &&
     (view !== "migliori" || inPeriod(i)) &&
     (!q || (i.title || "").toLowerCase().includes(q) || (i.original_title || "").toLowerCase().includes(q))
@@ -135,6 +138,7 @@ function cardHtml(i, n = 0) {
     ? `<img class="p" src="${esc(i.poster)}" alt="" loading="lazy" onload="this.classList.add('ok')" onerror="this.classList.add('ok')">`
     : `<div class="noimg">${esc(i.title)}</div>`;
   const genre = i.genres?.[0] ? ` · ${esc(i.genres[0])}` : "";
+  const forYou = state.view === "per_te";
   const meta = state.view === "novita" ? `<b>${esc(relDate(i.date))}</b>${genre}`
     : upcoming ? `<b>${esc(untilText(i.date))}</b>${genre}`
     : `${esc(i.year)}${genre}`;
@@ -143,15 +147,18 @@ function cardHtml(i, n = 0) {
     upcoming && i.date ? calHtml(i.date) : "",
     best ? scoreHtml(i) : "",
     onPlex(i) ? `<span class="on-plex">Su Plex</span>` : "",
+    seenHtml(i),
+    tasteHtml(i),
   ].join("");
+  const about = forYou && i.motivo ? i.motivo : i.overview;
   let posterBox = `
     <div class="poster">
       ${poster}
       <span class="pill ${fresh ? "new" : upcoming ? "soon" : ""}">${esc(pill)}</span>
       ${corner ? `<div class="corner">${corner}</div>` : ""}
-      <div class="logos">${i.platforms.map(logoHtml).join("")}</div>
-      ${i.rating && !best && !upcoming ? `<span class="rating">★ ${i.rating}</span>` : ""}
-      ${i.overview ? `<div class="hover-info"><p>${esc(i.overview)}</p><span class="go">▶ Dettagli</span></div>` : ""}
+      <div class="logos">${(i.platforms || []).map(logoHtml).join("")}</div>
+      ${!best && !upcoming ? ratingHtml(i) : ""}
+      ${about ? `<div class="hover-info">${forYou && i.motivo ? `<b class="why">Perché a te</b>` : ""}<p>${esc(about)}</p><span class="go">▶ Dettagli</span></div>` : ""}
       <span class="glare"></span>
     </div>`;
   if (i.rank) {
@@ -163,6 +170,32 @@ function cardHtml(i, n = 0) {
     ${i.type === "tv" ? `<span class="sub">${esc(i.badge)}</span>` : ""}
     <span class="meta">${meta}</span>
   </button>`;
+}
+
+// Media di IMDb e Rotten Tomatoes (in decimi); senza, il voto TMDB
+function ratingHtml(i) {
+  const v = i.voti;
+  if (v?.media != null) {
+    const parts = [v.imdb ? `IMDb ${fmtVote(v.imdb.voto)}` : "", v.rt ? `Rotten Tomatoes ${v.rt.voto}%` : ""].filter(Boolean);
+    return `<span class="rating avg" title="Media di ${esc(parts.join(" e "))}">★ ${fmtVote(v.media)}</span>`;
+  }
+  return i.rating ? `<span class="rating" title="Voto TMDB">★ ${fmtVote(i.rating)}</span>` : "";
+}
+
+function fmtVote(n) { return Number(n).toLocaleString("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }); }
+
+// Cuore e stelle che hai dato, nell'angolo della locandina
+function tasteHtml(i) {
+  const g = state.gusti.get(i.id);
+  if (!g) return "";
+  return `<span class="my-taste">${g.mi_piace ? `<i class="h">♥</i>` : ""}${g.voto != null ? `<i>★ ${g.voto}</i>` : ""}${!g.mi_piace && g.voto == null ? `<i>✎</i>` : ""}</span>`;
+}
+
+const SEEN_LABELS = { Completed: "Visto", "In progress": "Lo stai guardando", Planning: "Da vedere", Paused: "In pausa", Dropped: "Abbandonato" };
+
+function seenHtml(i) {
+  const v = state.visti[i.id];
+  return v ? `<span class="seen ${v.stato === "Completed" ? "done" : ""}">${esc(SEEN_LABELS[v.stato] || "Su Yamtrack")}</span>` : "";
 }
 
 // Voto mostrato in "I migliori": Tomatometer se c'e', altrimenti IMDb (o TMDB)
@@ -190,6 +223,10 @@ function render() {
 
   if (state.view === "richieste") {
     renderRequests();
+    return;
+  }
+  if (state.view === "per_te") {
+    renderForYou(items);
     return;
   }
   if (state.view === "tendenze") {
@@ -232,7 +269,7 @@ function platformCounts() {
   // Quanti titoli ha ogni piattaforma con gli altri filtri attuali
   const items = filtered(state.view, "platforms");
   const counts = { all: items.length };
-  for (const i of items) for (const p of i.platforms) counts[p] = (counts[p] || 0) + 1;
+  for (const i of items) for (const p of i.platforms || []) counts[p] = (counts[p] || 0) + 1;
   return counts;
 }
 
@@ -342,17 +379,19 @@ function showHero(n, instant = false) {
   const bg = $("#hero-bg");
   const apply = () => {
     bg.style.backgroundImage = `url("${i.backdrop.replace("/w780/", "/w1280/")}")`;
-    const where = i.platforms.map((p) => platform(p)?.name).filter(Boolean).join(", ");
+    const where = (i.platforms || []).map((p) => platform(p)?.name).filter(Boolean).join(", ");
     $("#hero-eyebrow").textContent = {
       tendenze: `N° ${i.rank} di tendenza in Italia`,
       prossimamente: `${i.type === "movie" ? "Film" : i.badge} · dal ${fmtLong.format(toDate(i.date))}${where ? ` su ${where}` : ""}`,
       migliori: `${i.rt ? `🍅 ${i.rt.voto}% Rotten Tomatoes` : `${i.score?.fonte || "★"} ${i.rating?.toFixed(1)}`} · ${periodTitle()}`,
       bambini: `${i.type === "movie" ? "Film" : "Serie"} per bambini`,
+      per_te: `Suggerito per te · ${i.type === "movie" ? "Film" : "Serie TV"} del ${i.year}`,
     }[state.view] || `${i.type === "movie" ? "Film" : i.badge} · ${relDate(i.date)}`;
     $("#hero-title").textContent = i.title;
-    $("#hero-meta").textContent = [i.year, i.genres.slice(0, 3).join(", "), i.rating ? `★ ${i.rating}` : ""].filter(Boolean).join("  ·  ");
-    $("#hero-overview").textContent = i.overview;
-    $("#hero-platforms").innerHTML = i.platforms.map(logoHtml).join("");
+    const score = i.voti?.media != null ? `★ ${fmtVote(i.voti.media)}` : i.rating ? `★ ${i.rating}` : "";
+    $("#hero-meta").textContent = [i.year, (i.genres || []).slice(0, 3).join(", "), score].filter(Boolean).join("  ·  ");
+    $("#hero-overview").textContent = state.view === "per_te" && i.motivo ? i.motivo : i.overview;
+    $("#hero-platforms").innerHTML = (i.platforms || []).map(logoHtml).join("");
     $("#hero-open").dataset.id = i.id;
     document.querySelectorAll("#hero-dots button").forEach((b, k) => b.classList.toggle("on", k === n));
     bg.classList.remove("fade");
@@ -367,6 +406,7 @@ function showHero(n, instant = false) {
 async function load() {
   const r = await fetch("/api/catalogo");
   state.data = await r.json();
+  attachPersonal();
   document.body.classList.toggle("needs-key", !!state.data.serve_chiave);
   $("#setup").hidden = !state.data.serve_chiave;
   if (state.data.serve_chiave) {
@@ -395,7 +435,8 @@ async function poll() {
 function findItem(id) {
   // Prima la sezione aperta (es. in "I migliori" l'elemento ha il voto IMDb), poi le altre
   const d = state.data || {};
-  const lists = [d[state.view], d.novita, d.tendenze, d.prossimamente, d.migliori, d.bambini, state.requests];
+  const lists = [d[state.view], d.novita, d.tendenze, d.prossimamente, d.migliori, d.per_te, d.bambini,
+    [...state.gusti.values()], state.requests];
   for (const list of lists) {
     const found = (list || []).find((x) => x.id === id);
     if (found) return found;
@@ -693,6 +734,7 @@ async function loadServizi() {
   document.querySelector('.tab[data-view="richieste"]').hidden = !any;
   if (!any && state.view === "richieste") setView("novita");
   if (state.servizi.plex) loadPlex();
+  if (state.servizi.yamtrack) loadVisti();
 }
 
 async function loadPlex() {
@@ -798,16 +840,228 @@ function openDetail(id) {
     (i.genres || []).join(", ") || null,
     i.runtime ? `${i.runtime} min` : null,
     i.seasons ? `${i.seasons} stagion${i.seasons === 1 ? "e" : "i"}` : null,
-    i.rating ? `${i.score ? `${i.score.fonte} ` : ""}★ ${i.rating} (${(i.votes || 0).toLocaleString("it-IT")} voti)` : null,
+    i.rating && !i.voti ? `${i.score ? `${i.score.fonte} ` : ""}★ ${i.rating} (${(i.votes || 0).toLocaleString("it-IT")} voti)` : null,
   ].filter(Boolean).join("  ·  ");
   $("#d-overview").textContent = i.overview || "Trama non ancora disponibile.";
+  $("#d-why").hidden = !i.motivo;
+  $("#d-why").innerHTML = i.motivo ? `<b>Perché te lo suggeriamo</b><span>${esc(i.motivo)}</span>` : "";
+  renderScores(i.voti);
+  loadScores(i);
+  renderTaste(i);
   $("#d-platforms").innerHTML = (i.platforms || []).map(badgeHtml).join("");
   $("#d-links").innerHTML =
     (i.watch_link ? `<a href="${esc(i.watch_link)}" target="_blank" rel="noopener">▶ Dove guardarlo</a>` : "") +
-    (i.score?.fonte === "IMDb" ? `<a href="${esc(i.score.url)}" target="_blank" rel="noopener">Scheda su IMDb</a>` : "") +
+    (i.imdb_id ? `<a href="https://www.imdb.com/title/${esc(i.imdb_id)}/" target="_blank" rel="noopener">Scheda su IMDb</a>` : "") +
     `<a href="${esc(i.tmdb_url || `https://www.themoviedb.org/${i.type}/${i.tmdb_id}`)}" target="_blank" rel="noopener">Scheda completa su TMDB</a>`;
   $("#detail").showModal();
 }
+
+// --------------------------------------------------- voti nella scheda
+
+function renderScores(v) {
+  const el = $("#d-scores");
+  el.hidden = !v;
+  if (!v) { el.innerHTML = ""; return; }
+  const chips = [];
+  if (v.imdb) {
+    chips.push(`<a class="score imdb" href="${esc(v.imdb.url)}" target="_blank" rel="noopener" title="${v.imdb.voti.toLocaleString("it-IT")} voti su IMDb">
+      <i>IMDb</i><b>${fmtVote(v.imdb.voto)}</b><small>/10</small></a>`);
+  }
+  if (v.rt) {
+    const fresh = v.rt.voto >= 60;
+    chips.push(`<a class="score rt ${fresh ? "" : "rotten"}" href="${esc(v.rt.url)}" target="_blank" rel="noopener" title="Tomatometer: recensioni positive della critica">
+      <i>${fresh ? "🍅" : "🤢"} Rotten Tomatoes</i><b>${v.rt.voto}%</b></a>`);
+  }
+  if (v.imdb && v.rt) {
+    chips.push(`<span class="score avg" title="Media tra IMDb e Rotten Tomatoes (in decimi)"><i>Media</i><b>${fmtVote(v.media)}</b><small>/10</small></span>`);
+  }
+  el.innerHTML = chips.join("");
+}
+
+const scoresCache = new Map();
+
+async function loadScores(i) {
+  if (i.date && i.date > new Date().toISOString().slice(0, 10)) return;  // non ancora uscito
+  const key = `${i.type}/${i.tmdb_id}`;
+  if (!scoresCache.has(key)) {
+    scoresCache.set(key, fetch(`/api/voti/${key}`).then((r) => r.ok ? r.json() : {}).then((d) => d.voti || null).catch(() => null));
+  }
+  const v = await scoresCache.get(key);
+  if ($("#detail").dataset.id === i.id && v) renderScores(v);
+}
+
+// ------------------------------------------- mi piace, stelle e note
+
+function attachPersonal() {
+  if (!state.data) return;
+  state.data.per_te = state.suggeriti?.titoli || [];
+  state.data.preferiti = [...state.gusti.values()];
+}
+
+async function loadGusti() {
+  try {
+    const d = await (await fetch("/api/gusti")).json();
+    state.gusti = new Map(d.titoli.map((g) => [g.id, g]));
+    attachPersonal();
+    if (state.data && state.view !== "richieste") render();
+  } catch { /* ignora */ }
+}
+
+async function loadVisti() {
+  try {
+    const d = await (await fetch("/api/visti")).json();
+    state.visti = d.titoli || {};
+    if (state.data && state.view !== "richieste") render();
+  } catch { /* ignora */ }
+}
+
+function renderTaste(i) {
+  const g = state.gusti.get(i.id) || {};
+  const like = $("#d-like");
+  like.classList.toggle("on", !!g.mi_piace);
+  like.setAttribute("aria-pressed", !!g.mi_piace);
+  like.querySelector("span").textContent = g.mi_piace ? "Ti piace" : "Mi piace";
+  const v = g.voto ?? null;
+  $("#d-stars").innerHTML =
+    `<button type="button" class="zero ${v === 0 ? "on" : ""}" data-v="0" role="radio" aria-checked="${v === 0}" title="0 stelle: non mi è piaciuto">0</button>` +
+    [1, 2, 3, 4, 5].map((n) => `<button type="button" class="star ${v != null && n <= v ? "on" : ""}" data-v="${n}" role="radio" aria-checked="${v === n}" title="${n} stell${n === 1 ? "a" : "e"}">★</button>`).join("") +
+    `<span class="stars-label">${v == null ? "Il tuo voto" : `${v} su 5`}</span>`;
+  const note = $("#d-note");
+  note.value = g.note || "";
+  note.dataset.saved = g.note || "";
+  $("#d-note-save").hidden = true;
+  tasteMsg("");
+  const seen = state.visti[i.id];
+  $("#d-seen").hidden = !seen;
+  if (seen) {
+    $("#d-seen").textContent = `Yamtrack: ${SEEN_LABELS[seen.stato] || seen.stato}${seen.voto != null ? ` · voto ${seen.voto}/10` : ""}`;
+  }
+}
+
+function tasteMsg(text, isError) {
+  const m = $("#d-taste-msg");
+  m.textContent = text || "";
+  m.className = `taste-msg ${isError ? "err" : "ok"}`;
+}
+
+function scheda(i) {
+  const keys = ["id", "tmdb_id", "type", "title", "original_title", "year", "date", "badge", "poster", "backdrop", "overview",
+    "genres", "categorie", "platforms", "watch_link", "tmdb_url", "imdb_id", "runtime", "seasons", "voti"];
+  return Object.fromEntries(keys.filter((k) => i[k] != null).map((k) => [k, i[k]]));
+}
+
+async function saveTaste(values) {
+  const id = $("#detail").dataset.id;
+  const i = findItem(id);
+  if (!i) return;
+  try {
+    const r = await fetch(`/api/gusti/${encodeURIComponent(id)}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...values, scheda: scheda(i) }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Non sono riuscito a salvare.");
+    if (body.gusto) state.gusti.set(id, body.gusto);
+    else state.gusti.delete(id);
+    attachPersonal();
+    if ($("#detail").dataset.id === id) {
+      renderTaste(i);
+      tasteMsg(values.note !== undefined ? "Note salvate." : "Salvato: terrò conto di questo nei suggerimenti.");
+    }
+    if (state.suggeriti) state.suggeriti.da_aggiornare = true;
+    if (state.view !== "richieste") render();
+  } catch (err) {
+    tasteMsg(err.message, true);
+  }
+}
+
+$("#d-like").addEventListener("click", () => {
+  const g = state.gusti.get($("#detail").dataset.id);
+  saveTaste({ mi_piace: !g?.mi_piace });
+});
+$("#d-stars").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-v]");
+  if (!b) return;
+  const v = Number(b.dataset.v);
+  const g = state.gusti.get($("#detail").dataset.id);
+  saveTaste({ voto: g?.voto === v ? null : v });
+});
+$("#d-note").addEventListener("input", (e) => {
+  $("#d-note-save").hidden = e.target.value.trim() === (e.target.dataset.saved || "").trim();
+  tasteMsg("");
+});
+function saveNote() {
+  const note = $("#d-note");
+  if (note.value.trim() === (note.dataset.saved || "").trim()) return;
+  note.dataset.saved = note.value.trim();
+  saveTaste({ note: note.value });
+}
+$("#d-note-save").addEventListener("click", saveNote);
+$("#d-note").addEventListener("blur", saveNote);
+
+// ----------------------------------------------------- suggeriti per te
+
+let suggTimer = null;
+
+async function loadSuggeriti(force = false) {
+  clearTimeout(suggTimer);
+  try {
+    const r = await fetch(force ? "/api/suggeriti/aggiorna" : "/api/suggeriti", { method: force ? "POST" : "GET" });
+    const body = await r.json();
+    if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Suggerimenti non disponibili.");
+    state.suggeriti = body;
+  } catch (err) {
+    state.suggeriti = { ...(state.suggeriti || { titoli: [] }), errore: err.message, in_corso: false };
+  }
+  attachPersonal();
+  if (state.view === "per_te") {
+    renderFilters();
+    renderHero();
+    render();
+  }
+  if (state.suggeriti.in_corso) suggTimer = setTimeout(() => loadSuggeriti(), 4000);
+}
+
+function forYouBarHtml(sg) {
+  const when = sg.generato
+    ? new Date(sg.generato).toLocaleString("it-IT", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+    : "";
+  const by = sg.fonte === "ai" ? "Scelti da Claude" : "Consigliati da TMDB";
+  const status = sg.in_corso
+    ? `<span class="dot busy"></span> ${sg.ai ? "Claude sta scegliendo i titoli per te…" : "Cerco titoli simili a quelli che ti piacciono…"}`
+    : sg.generato ? `${by} in base a ${plural(sg.gusti, "giudizio", "giudizi")}${sg.yamtrack ? " e a quello che hai visto su Yamtrack" : ""} · ${esc(when)}` : "";
+  const btn = !sg.in_corso && (sg.gusti || sg.yamtrack)
+    ? `<button class="btn-request ${sg.da_aggiornare ? "hot" : ""}" id="sugg-refresh" type="button">↻ ${sg.da_aggiornare ? "Aggiorna con i nuovi giudizi" : "Nuovi suggerimenti"}</button>` : "";
+  const hint = !sg.ai
+    ? `<p class="note">Per suggerimenti davvero su misura, che tengano conto delle tue note e dei film di tutti gli ultimi 50 anni, aggiungi una <b>chiave API di Anthropic</b> nel menu impostazioni (l'ingranaggio in alto). Intanto uso i titoli consigliati da TMDB per quelli che ti sono piaciuti.</p>` : "";
+  return `${hint}<div class="for-you-bar"><span class="for-you-status">${status}</span>${btn}</div>
+    ${sg.errore ? `<p class="note err">${esc(sg.errore)}</p>` : ""}`;
+}
+
+function renderForYou(items) {
+  const sg = state.suggeriti;
+  $("#empty").hidden = true;
+  if (!sg) {
+    skeleton();
+    return;
+  }
+  const mine = filtered("preferiti").sort((a, b) => (b.voto ?? -1) - (a.voto ?? -1) || (b.mi_piace ? 1 : 0) - (a.mi_piace ? 1 : 0));
+  if (!sg.gusti && !sg.yamtrack && !items.length) {
+    content.innerHTML = `<div class="req-empty"><h3>Dimmi cosa ti piace</h3>
+      <p>Apri un film o una serie e premi <b>♥ Mi piace</b>, dai un voto da 0 a 5 stelle e scrivi nelle note cosa ti è piaciuto.<br>
+      Qui troverai i titoli scelti per te, anche dei decenni passati.</p></div>`;
+    return;
+  }
+  const sugg = items.length
+    ? blockHtml("Suggeriti per te", items)
+    : sg.in_corso ? `<section class="block"><div class="grid">${'<div class="card skeleton"><div class="poster"></div><h3></h3><span class="meta"></span></div>'.repeat(6)}</div></section>`
+      : sg.titoli?.length ? `<div class="req-empty"><h3>Nessun suggerimento con questi filtri</h3><p>Prova a scegliere “Tutti” o un'altra piattaforma.</p></div>` : "";
+  content.innerHTML = forYouBarHtml(sg) + sugg + (mine.length ? blockHtml("I tuoi giudizi", mine) : "");
+}
+
+content.addEventListener("click", (e) => {
+  if (e.target.closest("#sugg-refresh")) loadSuggeriti(true);
+});
 
 // ------------------------------------------------------------ primo avvio
 
@@ -1036,12 +1290,132 @@ $("#a-omdb").addEventListener("click", (e) => {
   if (e.target.id === "a-omdb-remove") saveOmdb("");
 });
 
+
+// Suggerimenti con l'AI (Claude)
+function aiHtml(o) {
+  const pill = !o.configurata ? "Non collegato" : o.errore ? "Errore" : "Collegato";
+  const where = o.da_env ? `La chiave arriva da <code>ANTHROPIC_API_KEY</code>; se ne inserisci una qui, vale questa.` : "";
+  const models = o.modelli.some((m) => m.id === o.modello) ? o.modelli : [...o.modelli, { id: o.modello, nome: o.modello }];
+  return `<div class="a-sec-head"><h3>Suggeriti per te · AI</h3><span class="a-pill ${o.configurata && !o.errore ? "on" : ""}">${pill}</span></div>
+    <p class="a-note">Con una chiave API di Anthropic i suggerimenti li sceglie Claude, leggendo i tuoi mi piace, i voti e le note
+      (e i titoli già visti su Yamtrack), tra film e serie degli ultimi 50 anni. Crea la chiave su
+      <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">platform.claude.com</a> (servono crediti prepagati:
+      ogni aggiornamento dei suggerimenti costa pochi centesimi). Senza chiave si usano i titoli consigliati da TMDB. ${where}</p>
+    ${o.errore ? `<p class="a-note err">${esc(o.errore)}</p>` : ""}
+    ${o.configurata ? `<p class="a-note">Chiave attuale: <code>${esc(o.chiave)}</code></p>` : ""}
+    <div class="a-grid">
+      <label class="a-field"><span class="ticket-label">Modello</span>
+        <select id="a-ai-model">${models.map((m) => `<option value="${esc(m.id)}"${m.id === o.modello ? " selected" : ""}>${esc(m.nome)}</option>`).join("")}</select></label>
+    </div>
+    <form class="a-newtag a-wide" id="a-ai-form">
+      <input type="password" id="a-ai-key" placeholder="${o.configurata ? "Nuova chiave (lascia vuoto per tenere quella attuale)" : "Chiave API (sk-ant-…)"}" aria-label="Chiave API di Anthropic" autocomplete="off" spellcheck="false">
+      <button type="submit" class="a-link">Salva</button>
+      ${o.configurata && !o.da_env ? `<button type="button" class="a-link" id="a-ai-remove">Rimuovi chiave</button>` : ""}
+    </form>
+    <p class="a-msg" id="a-ai-msg" role="status"></p>`;
+}
+
+async function loadAi() {
+  try {
+    $("#a-ai").innerHTML = aiHtml(await adminFetch("/api/admin/ai"));
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    $("#a-ai").innerHTML = `<p class="a-note err">${esc(err.message)}</p>`;
+  }
+}
+
+async function saveAi(body) {
+  adminMsg("#a-ai-msg", "Verifico chiave e modello…");
+  try {
+    const o = await adminFetch("/api/admin/ai", { method: "PUT", body: JSON.stringify(body) });
+    $("#a-ai").innerHTML = aiHtml(o);
+    adminMsg("#a-ai-msg", body.chiave === "" ? "Chiave rimossa." : "Salvato. I prossimi suggerimenti li sceglie Claude.", false);
+    state.servizi.ai = o.configurata;
+    state.suggeriti = null;
+    if (state.view === "per_te") loadSuggeriti();
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    adminMsg("#a-ai-msg", err.message, true);
+  }
+}
+
+$("#a-ai").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const key = $("#a-ai-key").value.trim();
+  saveAi({ modello: $("#a-ai-model").value, ...(key ? { chiave: key } : {}) });
+});
+$("#a-ai").addEventListener("click", (e) => {
+  if (e.target.id === "a-ai-remove") saveAi({ chiave: "" });
+});
+
+// Yamtrack
+function yamtrackHtml(y) {
+  const pill = !y.configurato ? "Non collegato" : y.errore ? "Errore" : "Collegato";
+  return `<div class="a-sec-head"><h3>Yamtrack</h3><span class="a-pill ${y.configurato && !y.errore ? "on" : ""}">${pill}</span></div>
+    <p class="a-note">Collega il tuo Yamtrack per segnare i titoli che hai già visto, non suggerirteli di nuovo e usare i tuoi voti
+      per capire meglio i tuoi gusti. CosaGuardo entra con il tuo utente e legge l'esportazione CSV (solo lettura, una volta l'ora).
+      ${y.da_env ? "I dati arrivano da <code>YAMTRACK_URL</code>, <code>YAMTRACK_USER</code> e <code>YAMTRACK_PASSWORD</code>; se li inserisci qui, valgono questi." : ""}</p>
+    ${y.errore ? `<p class="a-note err">${esc(y.errore)}</p>` : ""}
+    ${y.configurato && y.titoli != null ? `<p class="a-note">Film e serie letti: ${y.titoli}</p>` : ""}
+    <form id="a-yam-form">
+      <div class="a-grid">
+        <label class="a-field"><span class="ticket-label">Indirizzo</span>
+          <input type="url" id="a-yam-url" value="${esc(y.url)}" placeholder="http://192.168.1.10:8000" autocomplete="off" spellcheck="false"></label>
+        <label class="a-field"><span class="ticket-label">Utente</span>
+          <input type="text" id="a-yam-user" value="${esc(y.utente)}" autocomplete="off" spellcheck="false"></label>
+        <label class="a-field"><span class="ticket-label">Password</span>
+          <input type="password" id="a-yam-pass" placeholder="${y.configurato ? "Invariata se vuota" : ""}" autocomplete="new-password"></label>
+      </div>
+      <div class="a-save">
+        <button type="submit" class="btn-request">Collega e prova</button>
+        ${y.configurato && !y.da_env ? `<button type="button" class="a-link" id="a-yam-remove">Scollega</button>` : ""}
+        <p class="a-msg" id="a-yam-msg" role="status"></p>
+      </div>
+    </form>`;
+}
+
+async function loadYamtrack() {
+  try {
+    $("#a-yamtrack").innerHTML = yamtrackHtml(await adminFetch("/api/admin/yamtrack"));
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    $("#a-yamtrack").innerHTML = `<p class="a-note err">${esc(err.message)}</p>`;
+  }
+}
+
+async function saveYamtrack(body) {
+  adminMsg("#a-yam-msg", body.url ? "Provo ad accedere a Yamtrack…" : "");
+  try {
+    const y = await adminFetch("/api/admin/yamtrack", { method: "PUT", body: JSON.stringify(body) });
+    $("#a-yamtrack").innerHTML = yamtrackHtml(y);
+    adminMsg("#a-yam-msg", y.configurato ? `Collegato: ${plural(y.titoli || 0, "titolo letto", "titoli letti")}.` : "Yamtrack scollegato.", false);
+    state.servizi.yamtrack = y.configurato;
+    state.visti = {};
+    if (y.configurato) loadVisti(); else render();
+  } catch (err) {
+    if (err.status === 401) { setAdminToken(null); return showLock(true); }
+    adminMsg("#a-yam-msg", err.message, true);
+  }
+}
+
+$("#a-yamtrack").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const url = $("#a-yam-url").value.trim();
+  if (!url) return $("#a-yam-url").focus();
+  saveYamtrack({ url, utente: $("#a-yam-user").value.trim(), password: $("#a-yam-pass").value || null });
+});
+$("#a-yamtrack").addEventListener("click", (e) => {
+  if (e.target.id === "a-yam-remove") saveYamtrack({ url: "" });
+});
+
 async function showPanel() {
   $("#a-lock").hidden = true;
   $("#a-panel").hidden = false;
   $("#a-services").innerHTML = `<p class="a-note">Leggo le impostazioni di Sonarr e Radarr…</p>`;
   adminMsg("#a-save-msg", "");
   loadOmdb();
+  loadAi();
+  loadYamtrack();
   try {
     admin.conf = await adminFetch("/api/admin/impostazioni");
   } catch (err) {
@@ -1150,6 +1524,7 @@ function setView(view) {
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
   if (t.dataset.view === "richieste") state.requestsLoaded = false;
   setView(t.dataset.view);
+  if (t.dataset.view === "per_te") loadSuggeriti();
   renderFilters();
   renderHero();
   render();
@@ -1257,6 +1632,7 @@ $("#d-more").addEventListener("click", openSeasons);
 
 setView(state.view);
 loadServizi();
+loadGusti().then(() => { if (state.view === "per_te") loadSuggeriti(); });
 skeleton();
 load().catch(() => { $("#error").hidden = false; $("#error").textContent = "Impossibile contattare il server."; });
 setInterval(poll, POLL_MS);

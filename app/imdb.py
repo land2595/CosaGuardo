@@ -23,6 +23,9 @@ class ImdbRatings:
         self.file = os.path.join(data_dir, "imdb-ratings.tsv.gz")
         self.url = url
         self.enabled = enabled
+        # Voti gia' letti dal file (None = titolo non presente), validi finche' il file non cambia
+        self._mem: dict[str, tuple[float, int] | None] = {}
+        self._mem_mtime = 0.0
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=120, follow_redirects=True)
@@ -69,8 +72,18 @@ class ImdbRatings:
                 log.warning("Impossibile scaricare i voti IMDb: %s", e)
         if not os.path.exists(self.file):
             return {}
-        try:
-            return await asyncio.to_thread(self._read, ids)
-        except (OSError, ValueError, EOFError) as e:
-            log.warning("File dei voti IMDb non leggibile: %s", e)
-            return {}
+        mtime = os.path.getmtime(self.file)
+        if mtime != self._mem_mtime:
+            self._mem, self._mem_mtime = {}, mtime
+        missing = ids - self._mem.keys()
+        if missing:
+            try:
+                found = await asyncio.to_thread(self._read, missing)
+            except (OSError, ValueError, EOFError) as e:
+                log.warning("File dei voti IMDb non leggibile: %s", e)
+                return {}
+            if len(self._mem) > 50_000:
+                self._mem = {}
+            for i in missing:
+                self._mem[i] = found.get(i)
+        return {i: v for i in ids if (v := self._mem.get(i))}

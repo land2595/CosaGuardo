@@ -18,6 +18,10 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 - **Plex**: se colleghi il tuo server Plex, CosaGuardo segna i titoli che hai già, mostra stagione per stagione quanti episodi hai e apre il titolo in Plex con un clic.
 - **Menu admin con PIN**: dall'ingranaggio in alto a destra scegli i tag di Sonarr e Radarr da applicare ai titoli che aggiungi, il profilo di qualità e la cartella.
 - **Stato della serie**: la scheda di ogni serie dice quando esce la prossima stagione (o il prossimo episodio) oppure se la serie è terminata o cancellata.
+- **Voti IMDb e Rotten Tomatoes con la media**: ogni locandina mostra la media dei due voti (in decimi), la scheda li mostra tutti e tre.
+- **Il tuo giudizio**: metti *mi piace* a film e serie, dai un voto da 0 a 5 stelle e scrivi nelle note cosa ti è piaciuto.
+- **Suggeriti per te**: film e serie degli ultimi 50 anni scelti per te da **Claude** (AI di Anthropic, con la tua chiave API) in base a mi piace, voti e note, ognuno con il motivo. Senza chiave usa i titoli consigliati da TMDB.
+- **Yamtrack**: se lo colleghi, i titoli già visti vengono segnati, non ti vengono suggeriti di nuovo e i tuoi voti aiutano a capire i tuoi gusti.
 
 ![Home](docs/home.png)
 
@@ -130,6 +134,29 @@ Per trovare il token: apri Plex Web, su un qualsiasi film clicca **⋯ → Ottie
 
 CosaGuardo legge la libreria ogni 10 minuti e riconosce i titoli dagli id TMDB e TVDB, quindi funziona con l'agente Plex predefinito.
 
+## Suggeriti per te
+
+Nella scheda di ogni titolo c'è il riquadro **Il tuo giudizio**: ♥ *Mi piace*, un voto da 0 a 5 stelle e le note su cosa ti è piaciuto (regia, personaggi, atmosfera, finale...). Più giudizi dai, e più sono precise le note, migliori sono i suggerimenti. I giudizi sono salvati in `/data/gusti.json`; quelli che hai dato compaiono anche in fondo alla sezione *Suggeriti per te*.
+
+![Il tuo giudizio e i voti nella scheda](docs/giudizio.png)
+
+La sezione **Suggeriti per te** mostra 30 film e serie scelti tra tutto quello che è uscito negli ultimi 50 anni, non solo le novità, ognuno con il motivo per cui potrebbe piacerti. Ogni titolo viene cercato su TMDB, così hai locandina, trama, voti, piattaforme italiane (se è in streaming) e il pulsante per richiederlo a Radarr o Sonarr. I suggerimenti si rifanno da soli quando apri la sezione dopo aver cambiato i tuoi giudizi, oppure con il pulsante *Nuovi suggerimenti*.
+
+![Suggeriti per te](docs/per-te.png)
+
+- **Con l'AI (consigliato)**: crea una chiave API su [platform.claude.com](https://platform.claude.com/settings/keys) e inseriscila nel menu admin (o con `ANTHROPIC_API_KEY`). Claude legge i tuoi giudizi e le note e sceglie titoli con le stesse qualità, non solo dello stesso genere. Il modello predefinito è Claude Opus 5.5; dal menu puoi scegliere Sonnet o Haiku, più economici. Ogni aggiornamento dei suggerimenti è una sola richiesta (pochi centesimi) e parte solo quando i tuoi giudizi cambiano.
+- **Senza chiave**: CosaGuardo usa i titoli che TMDB consiglia per quelli a cui hai messo mi piace o almeno 4 stelle.
+
+### Collegare Yamtrack
+
+[Yamtrack](https://github.com/FuzzyGrim/Yamtrack) non ha un'API per leggere la libreria, quindi CosaGuardo entra con il tuo utente e scarica l'esportazione CSV (la stessa di *Impostazioni → Esporta*), al massimo una volta l'ora. Inserisci indirizzo, utente e password nel menu admin (o con `YAMTRACK_URL`, `YAMTRACK_USER`, `YAMTRACK_PASSWORD`). Vengono letti solo i film e le serie con fonte TMDB. Con Yamtrack collegato:
+
+- le locandine dei titoli che hai visto mostrano **Visto** (o *Lo stai guardando*, *Da vedere*...);
+- i titoli già presenti in Yamtrack non vengono suggeriti;
+- i voti che hai dato in Yamtrack (da 0 a 10) vengono passati a Claude insieme ai tuoi giudizi.
+
+La password viene salvata in chiaro in `/data/impostazioni.json`: usa un utente Yamtrack dedicato se preferisci. Se usi solo l'accesso con OIDC o social, crea in Yamtrack un utente con password.
+
 ## Configurazione
 
 Tutte le opzioni sono variabili d'ambiente (`-e NOME=valore` con `docker run`, oppure la sezione `environment` del compose). Nessuna è obbligatoria.
@@ -156,6 +183,9 @@ Tutte le opzioni sono variabili d'ambiente (`-e NOME=valore` con `docker run`, o
 | `BEST_HOURS` | `24` | Ogni quante ore ricalcolare *I migliori*. |
 | `IMDB_RATINGS` | `1` | Usa i voti IMDb in *I migliori*. Con `0` usa solo quelli di TMDB e non scarica niente. |
 | `UPCOMING_DAYS` | `60` | Quanti giorni avanti guarda la sezione *Prossimamente*. |
+| `ANTHROPIC_API_KEY` | | Chiave API di Anthropic per *Suggeriti per te* con l'AI. Si può inserire anche dal menu admin. |
+| `AI_MODEL` | `claude-opus-5-5` | Modello di Claude per i suggerimenti (es. `claude-sonnet-5-5`, `claude-haiku-5-5`). |
+| `YAMTRACK_URL` / `YAMTRACK_USER` / `YAMTRACK_PASSWORD` | | Il tuo Yamtrack, per i titoli già visti. Si può impostare anche dal menu admin. |
 | `PUID` / `PGID` | `1000` / `1000` | Utente e gruppo con cui gira l'app e a cui appartengono i file in `/data`. Utile se monti una cartella del NAS (es. `-v /percorso/cosaguardo:/data`). |
 
 Hulu non è presente perché non esiste in Italia: i suoi contenuti escono su Disney+.
@@ -199,6 +229,12 @@ Per i titoli **in arrivo** TMDB non sa ancora su quale piattaforma usciranno. Co
 | `GET` / `PUT /api/admin/impostazioni` | Tag, profilo di qualità e cartella di Sonarr e Radarr (serve il token). |
 | `POST /api/admin/tag` | Crea un tag in Sonarr o Radarr: `{"servizio": "sonarr", "nome": "da-vedere"}` (serve il token). |
 | `GET /api/plex` | Gli id TMDB dei film e delle serie già presenti su Plex. |
+| `GET /api/voti/{movie\|tv}/{id}` | Voti IMDb e Rotten Tomatoes di un titolo, con la media in decimi. |
+| `GET /api/gusti` | I tuoi giudizi (mi piace, voto, note). |
+| `PUT /api/gusti/{id}` | Aggiorna il giudizio di un titolo: `{"mi_piace": true, "voto": 4, "note": "..."}` (ogni campo è facoltativo; `"voto": null` lo toglie). |
+| `GET /api/suggeriti` | *Suggeriti per te* (se i giudizi sono cambiati, li ricalcola in background). `POST /api/suggeriti/aggiorna` li rifà subito. |
+| `GET /api/visti` | I titoli presenti su Yamtrack, con stato e voto. |
+| `GET` / `PUT /api/admin/ai`, `GET` / `PUT /api/admin/yamtrack` | Chiave e modello dell'AI, collegamento a Yamtrack (serve il token). |
 | `POST /api/chiave` | Imposta la chiave TMDB (solo se non è ancora configurata). |
 | `GET /health` | Controllo di salute per Docker. |
 
