@@ -35,7 +35,7 @@ TV_STATUS = {
 }
 
 # Versione del formato dei dati salvati: se cambia, il catalogo si ricalcola all'avvio
-SCHEMA = 3
+SCHEMA = 4
 
 # Categorie mostrate nei filtri: chiave -> (nome, generi TMDB dei film, generi TMDB delle serie).
 # Le serie hanno generi accorpati (es. "Action & Adventure"), quindi un genere puo' finire in due categorie.
@@ -65,14 +65,20 @@ BEST_VOTES = {                # voti minimi per fidarsi del punteggio
     "movie": {"imdb": 5000, "tmdb": 300},
     "tv": {"imdb": 2000, "tmdb": 100},
 }
-# Generi TV esclusi: bambini, notiziari, reality, soap, talk show
-TV_EXCLUDED_GENRES = {10762, 10763, 10764, 10766, 10767}
+# Generi TV esclusi: notiziari, reality, soap, talk show (le serie per bambini restano,
+# segnate con "bambini": l'interfaccia lascia scegliere se mostrarle)
+TV_EXCLUDED_GENRES = {10763, 10764, 10766, 10767}
 
 # "Bambini" (fino a 12 anni): classificazioni USA ammesse, le piu' diffuse su TMDB
 KIDS_MOVIE_CERTS = {"G", "PG"}
 KIDS_TV_RATINGS = {"TV-Y", "TV-Y7", "TV-Y7-FV", "TV-G", "TV-PG"}
 KIDS_MOVIE_EXCLUDED = {27, 53, 80, 10752}           # horror, thriller, crime, guerra
 KIDS_TV_EXCLUDED = {80, 10763, 10764, 10766, 10767, 10768}
+
+# Filmografia di un attore: niente talk show, notiziari, reality e premiazioni
+CREDITS_EXCLUDED_GENRES = {10763, 10764, 10767}
+SELF_ROLES = ("self", "himself", "herself", "se stess", "lui stesso", "lei stessa", "narrator (voice)")
+CAST_SIZE = 15
 
 
 class TMDBError(RuntimeError):
@@ -89,6 +95,8 @@ class Catalog:
         self._details: dict[str, dict] = {}
         self._trailers: dict[str, dict | None] = {}
         self._tv_info: dict[int, tuple[float, dict]] = {}
+        self._schede: dict[str, tuple[float, dict]] = {}
+        self._persone: dict[int, tuple[float, dict]] = {}
         self._sem = asyncio.Semaphore(8)
         self.imdb = ImdbRatings(self.s.data_dir, self.s.imdb_ratings_url, self.s.imdb_ratings)
         self.rt = RottenTomatoes(self.s.data_dir, self.s.omdb_api_key, self.s.omdb_daily_limit)
@@ -615,6 +623,7 @@ class Catalog:
             if not it["year"] or int(it["year"]) not in years or (it["date"] or "") > today.isoformat():
                 continue
             imdb_id = d.get("imdb_id") or (d.get("external_ids") or {}).get("imdb_id")
+            it["bambini"] = is_kids(d, it["type"])
             candidates.append((it, imdb_id))
 
         imdb = await self.imdb.lookup({i for _, i in candidates if i})
@@ -775,6 +784,92 @@ class Catalog:
             res = await self._get(client, f"/tv/{tmdb_id}/external_ids")
         return res.get("tvdb_id")
 
+    # ------------------------------------------------------ cast e attori
+
+    async def scheda(self, kind: str, tmdb_id: int) -> dict:
+        """Generi e attori principali di un titolo (per le serie, il cast di tutte le stagioni)."""
+        key = f"{kind}-{tmdb_id}"
+        cached = self._schede.get(key)
+        if cached and time.monotonic() - cached[0] < 6 * 3600:
+            return cached[1]
+        credits = "credits" if kind == "movie" else "aggregate_credits"
+        async with self._client() as client:
+            d = await self._get(client, f"/{kind}/{tmdb_id}", append_to_response=credits)
+        cast = []
+        for c in (d.get(credits) or {}).get("cast", []):
+            if not c.get("id"):
+                continue
+            roles = c.get("roles") or []
+            character = c.get("character") or (roles[0].get("character") if roles else "") or ""
+            cast.append({"id": c["id"], "nome": c.get("name") or "", "personaggio": character,
+                         "foto": _photo(c.get("profile_path")),
+                         "episodi": c.get("total_episode_count"), "ordine": c.get("order", 999)})
+        cast.sort(key=lambda c: c["ordine"])
+        for c in cast:
+            c.pop("ordine")
+        out = {"generi": [g["name"] for g in d.get("genres", []) if g.get("name")], "cast": cast[:CAST_SIZE]}
+        if d:
+            self._schede[key] = (time.monotonic(), out)
+        return out
+
+    async def persona(self, person_id: int) -> dict | None:
+        """Un attore (o regista) con tutti i film e le serie in cui ha lavorato, dal piu' recente."""
+        cached = self._persone.get(person_id)
+        if cached and time.monotonic() - cached[0] < 6 * 3600:
+            return cached[1]
+        async with self._client() as client:
+            d = await self._get(client, f"/person/{person_id}", append_to_response="combined_credits")
+            if d and not d.get("biography"):
+                en = await self._get(client, f"/person/{person_id}", language="en-US")
+                d["biography"] = en.get("biography", "")
+        if not d or not d.get("id"):
+            return None
+        credits = d.get("combined_credits") or {}
+        cast = [dict(c, _ruolo=c.get("character") or "") for c in credits.get("cast", [])]
+        crew = [dict(c, _ruolo=c.get("job") or "") for c in credits.get("crew", [])
+                if c.get("job") in ("Director", "Creator", "Screenplay", "Writer")]
+        acting = d.get("known_for_department") in (None, "", "Acting") or len(cast) >= len(crew)
+        titoli: dict[str, dict] = {}
+        for c in cast if acting else crew:
+            kind = c.get("media_type")
+            if kind not in ("movie", "tv") or not c.get("id"):
+                continue
+            if set(c.get("genre_ids") or []) & CREDITS_EXCLUDED_GENRES:
+                continue
+            ruolo = c["_ruolo"]
+            if acting and ruolo.lower().startswith(SELF_ROLES):
+                continue
+            key = f"{kind}-{c['id']}"
+            date_ = (c.get("release_date") if kind == "movie" else c.get("first_air_date")) or None
+            if key in titoli:
+                prev = titoli[key]
+                if ruolo and ruolo not in prev["ruolo"].split(" / "):
+                    prev["ruolo"] = " / ".join(filter(None, [prev["ruolo"], ruolo]))
+                continue
+            titoli[key] = {
+                "id": key, "tmdb_id": c["id"], "type": kind,
+                "title": c.get("title") or c.get("name") or c.get("original_title") or c.get("original_name"),
+                "original_title": c.get("original_title") or c.get("original_name"),
+                "date": date_, "year": (date_ or "")[:4],
+                "ruolo": ruolo, "episodi": c.get("episode_count") if kind == "tv" else None,
+                "poster": _photo(c.get("poster_path"), "w342"),
+                "rating": round(c.get("vote_average") or 0, 1), "votes": c.get("vote_count") or 0,
+                "popularity": c.get("popularity") or 0,
+            }
+        items = list(titoli.values())
+        # Prima i titoli annunciati senza data, poi dal piu' recente al piu' vecchio
+        items.sort(key=lambda x: x["date"] or "9999", reverse=True)
+        out = {
+            "id": d["id"], "nome": d.get("name") or "", "foto": _photo(d.get("profile_path"), "h632"),
+            "biografia": d.get("biography") or "", "nascita": d.get("birthday"), "morte": d.get("deathday"),
+            "luogo": d.get("place_of_birth"), "sesso": d.get("gender") or 0, "mestiere": "attore" if acting else "regia",
+            "tmdb_url": f"https://www.themoviedb.org/person/{d['id']}",
+            "imdb_id": d.get("imdb_id"),
+            "titoli": items,
+        }
+        self._persone[person_id] = (time.monotonic(), out)
+        return out
+
     # ------------------------------------------------- titoli di qualsiasi anno
 
     async def item_for(self, kind: str, tmdb_id: int) -> dict | None:
@@ -898,6 +993,24 @@ def us_tv_rating(d: dict) -> str | None:
         if r.get("iso_3166_1") == "US" and r.get("rating"):
             return r["rating"]
     return None
+
+
+def is_kids(d: dict, kind: str) -> bool:
+    """Titolo per bambini: stessi criteri della sezione "Bambini"."""
+    genres = {g.get("id") for g in d.get("genres", [])}
+    if kind == "movie":
+        if not genres & {10751, 16} or genres & KIDS_MOVIE_EXCLUDED:
+            return False
+        cert = us_certification(d)
+        return cert in KIDS_MOVIE_CERTS if cert else 10751 in genres
+    if not genres & {10762, 10751, 16} or genres & KIDS_TV_EXCLUDED:
+        return False
+    rating = us_tv_rating(d)
+    return rating in KIDS_TV_RATINGS if rating else 10762 in genres
+
+
+def _photo(path: str | None, size: str = "w185") -> str | None:
+    return f"{IMG}/{size}{path}" if path else None
 
 
 def dedupe(ids: list[int]) -> list[int]:

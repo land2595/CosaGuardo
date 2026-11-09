@@ -98,10 +98,16 @@
         <p class="eyebrow" id="d-badge"></p>
         <h2 id="d-title"></h2>
         <p class="d-orig" id="d-orig"></p>
+        <button type="button" class="d-back" id="d-back" hidden></button>
         <p class="d-meta" id="d-meta"></p>
+        <div class="d-genres" id="d-genres" aria-label="Genere"></div>
         <div class="d-scores" id="d-scores" hidden></div>
         <div class="d-why" id="d-why" hidden></div>
         <p class="d-overview" id="d-overview"></p>
+        <section class="cast" id="d-cast" aria-label="Attori principali" hidden>
+          <span class="ticket-label">Attori principali</span>
+          <div class="cast-row" id="d-cast-row"></div>
+        </section>
         <div class="ticket">
           <span class="ticket-label">Lo trovi su</span>
           <div class="badges" id="d-platforms"></div>
@@ -151,6 +157,25 @@
         <p class="d-request-msg" id="d-request-msg" role="status"></p>
         <p class="d-links" id="d-links"></p>
       </div>
+    </div>
+  </dialog>
+
+  <dialog id="person" class="person" aria-labelledby="p-name">
+    <button class="close" aria-label="Chiudi" data-close>&times;</button>
+    <header class="p-head">
+      <img class="p-photo" id="p-photo" alt="">
+      <div class="p-info">
+        <p class="eyebrow" id="p-role">Attore</p>
+        <h2 id="p-name"></h2>
+        <p class="p-meta" id="p-meta"></p>
+        <p class="p-bio" id="p-bio"></p>
+        <button type="button" class="a-link" id="p-bio-more" hidden>Leggi tutto</button>
+        <p class="d-links" id="p-links"></p>
+      </div>
+    </header>
+    <div class="p-body">
+      <div class="p-filter" id="p-filter" role="tablist" aria-label="Film o serie"></div>
+      <div class="p-grid" id="p-grid"></div>
     </div>
   </dialog>
 

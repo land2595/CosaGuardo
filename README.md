@@ -9,10 +9,11 @@ CosaGuardo raccoglie i film e le serie TV appena usciti sulle piattaforme italia
 - **Sempre aggiornato**: il catalogo si aggiorna da solo ogni ora (configurabile), e la pagina si ricarica quando ci sono novità.
 - **Di tendenza in Italia**: la classifica dei titoli più visti della settimana disponibili sulle piattaforme italiane.
 - **Prossimamente**: i film e le serie in arrivo sulle piattaforme italiane nei prossimi 60 giorni, con la data di uscita e un calendario per settimana e per mese.
-- **I migliori**: la classifica dei film e delle serie migliori di un anno (es. il 2024) o degli ultimi 3, 5 o 10 anni, già disponibili in Italia e con la scheda in italiano, **ordinati per voto di Rotten Tomatoes** (con una chiave gratuita OMDb; senza, si usa il voto IMDb).
+- **I migliori**: la classifica dei film e delle serie migliori di un anno (es. il 2024) o degli ultimi 3, 5 o 10 anni, già disponibili in Italia e con la scheda in italiano, **ordinati per voto di Rotten Tomatoes** (con una chiave gratuita OMDb; senza, si usa il voto IMDb). I contenuti per bambini (animazione e film per famiglie, serie per bambini) sono esclusi, ma con **＋ Includi contenuti per bambini** li aggiungi alla classifica.
 - **Bambini**: i film e le serie più popolari adatti ai bambini fino a 12 anni.
 - Filtri per film o serie, per **categoria** (commedia, avventura, azione, animazione...) e per piattaforma in tutte le sezioni, ricerca per titolo, schede con trama, voto e link "dove guardarlo".
 - Le serie hanno un'etichetta che dice cosa c'è di nuovo: *Nuova serie*, *Nuova stagione* o *Nuovi episodi*.
+- **Generi e attori principali** nella scheda di ogni titolo. Tocca un attore per vedere **tutti i film e le serie** in cui ha recitato, dal più recente, e aprire la scheda di ognuno.
 - **Trailer** nella scheda di ogni titolo, in italiano quando c'è.
 - **Richieste**: un pulsante "Richiedi" manda i film a **Radarr** e le serie a **Sonarr**, che li cercano e li scaricano. Per le serie scegli se richiedere tutte le stagioni o solo alcune. La sezione *Le mie liste → Richieste* mostra lo stato di ognuna, il progresso del download con il tempo rimanente e gli episodi scaricati per stagione.
 - **Plex**: se colleghi il tuo server Plex, CosaGuardo segna i titoli che hai già, mostra stagione per stagione quanti episodi hai e apre il titolo in Plex con un clic.
