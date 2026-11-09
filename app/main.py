@@ -18,6 +18,7 @@ from .arr import ASSENTE, SCONOSCIUTO, ArrError, Radarr, Requests, Sonarr
 from .catalog import CATEGORIES, Catalog, TMDBError
 from .consigli import DEFAULT_MODEL, DEFAULT_OPENAI_URL, MODELS, PROVIDERS, AiError, Consigli
 from .gusti import Gusti, GustiError
+from .liste import LISTE, Liste, ListeError
 from .yamtrack import Yamtrack, YamtrackError
 from .plex import Plex, PlexError
 from .rotten import OmdbError
@@ -37,6 +38,7 @@ plex = Plex(settings.plex_url, settings.plex_token)
 requests = Requests(settings.data_dir)
 admin = Admin(settings.data_dir, settings.admin_pin)
 gusti = Gusti(settings.data_dir)
+liste = Liste(settings.data_dir)
 consigli = Consigli(settings.data_dir, settings.anthropic_api_key, settings.ai_model)
 yamtrack = Yamtrack(settings.yamtrack_url, settings.yamtrack_user, settings.yamtrack_password)
 _tasks: set[asyncio.Task] = set()
@@ -207,7 +209,8 @@ async def _plex_find(kind: str, tmdb_id: int, tvdb_id: int | None = None) -> dic
 
 def _find(item_id: str) -> dict | None:
     """Un titolo del catalogo, dei suggerimenti, dei giudizi o delle richieste."""
-    return catalog.find_item(item_id) or consigli.find(item_id) or gusti.get(item_id) or requests.get(item_id)
+    return (catalog.find_item(item_id) or consigli.find(item_id) or gusti.get(item_id) or liste.get(item_id)
+            or requests.get(item_id))
 
 
 @app.get("/api/servizi")
@@ -332,7 +335,48 @@ async def post_richiesta(body: NuovaRichiesta):
         raise HTTPException(502, str(e)) from e
     requests.add(item, tvdb_id=arr_id if item["type"] == "tv" else None,
                  seasons=body.stagioni if item["type"] == "tv" else None)
+    liste.remove("watchlist", item["id"])  # richiesto: non serve piu' tenerlo da parte
     return {"stato": stato, "servizio": svc.name}
+
+
+@app.delete("/api/richieste/{item_id}")
+def delete_richiesta(item_id: str):
+    """Toglie il titolo dalla schermata "Le mie liste". Non cancella niente da Radarr, Sonarr o Plex."""
+    if not requests.remove(item_id):
+        raise HTTPException(404, "Richiesta non trovata.")
+    return {"ok": True}
+
+
+# ---------------------------------------------------- watchlist e ignorati
+
+class Voce(BaseModel):
+    scheda: dict | None = None
+
+
+def _lista(nome: str) -> str:
+    if nome not in LISTE:
+        raise HTTPException(404, "Lista non trovata.")
+    return nome
+
+
+@app.get("/api/liste")
+def get_liste():
+    return {nome: liste.items(nome) for nome in LISTE}
+
+
+@app.put("/api/liste/{nome}/{item_id}")
+def put_lista(nome: str, item_id: str, body: Voce | None = None):
+    _lista(nome)
+    try:
+        return {"voce": liste.add(nome, item_id, _find(item_id) or (body.scheda if body else None))}
+    except ListeError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.delete("/api/liste/{nome}/{item_id}")
+def delete_lista(nome: str, item_id: str):
+    liste.remove(_lista(nome), item_id)
+    return {"ok": True}
 
 
 # --------------------------------------------------------------------- voti
@@ -376,6 +420,21 @@ def put_gusto(item_id: str, body: Gusto):
         return {"gusto": gusti.update(item_id, scheda, values)}
     except GustiError as e:
         raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/gusti/{item_id}/note-ai")
+async def post_note_ai(item_id: str, body: Voce | None = None):
+    """Qualche nota brevissima proposta dall'AI sul perche' il titolo ti e' piaciuto.
+    Parte solo dal pulsante nella scheda: una richiesta all'AI per ogni pressione."""
+    if not consigli.configured:
+        raise HTTPException(400, "Collega un servizio AI nel menu impostazioni (l'ingranaggio in alto).")
+    item = _find(item_id) or (body.scheda if body else None)
+    if not item or not item.get("title"):
+        raise HTTPException(404, "Titolo non trovato.")
+    try:
+        return {"note": await consigli.note(item, gusti.get(item_id))}
+    except AiError as e:
+        raise HTTPException(502, str(e)) from e
 
 
 VISTI_SOURCES = ("yamtrack", "plex")
@@ -440,7 +499,7 @@ def _has_tastes() -> bool:
 
 async def _generate() -> None:
     names = [p["name"] for p in catalog.data.get("piattaforme", {}).values()]
-    await consigli.generate(catalog, gusti, await _visti(), names)
+    await consigli.generate(catalog, gusti, await _visti(), names, liste)
 
 
 def _start_generation() -> None:

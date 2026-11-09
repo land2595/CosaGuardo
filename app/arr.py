@@ -372,6 +372,15 @@ class Requests:
         self._save()
         return req
 
+    def remove(self, item_id: str) -> bool:
+        """Toglie un titolo dall'elenco di CosaGuardo. Radarr, Sonarr e Plex non vengono toccati."""
+        before = len(self.items)
+        self.items = [r for r in self.items if r["id"] != item_id]
+        if len(self.items) == before:
+            return False
+        self._save()
+        return True
+
     def _save(self) -> None:
         try:
             os.makedirs(os.path.dirname(self.file), exist_ok=True)

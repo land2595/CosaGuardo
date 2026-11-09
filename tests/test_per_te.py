@@ -12,6 +12,7 @@ from app.catalog import Catalog, combined_ratings
 from app.config import Settings
 from app.consigli import Consigli, build_prompt
 from app.gusti import Gusti
+from app.liste import Liste
 from app.plex import Plex
 from app.yamtrack import Yamtrack, YamtrackError, parse_export
 from tests import mock_arr, mock_tmdb, mock_yamtrack
@@ -36,6 +37,7 @@ def app_client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "admin", Admin(str(tmp_path)))
     monkeypatch.setattr(main, "requests", Requests(str(tmp_path)))
     monkeypatch.setattr(main, "gusti", Gusti(str(tmp_path)))
+    monkeypatch.setattr(main, "liste", Liste(str(tmp_path)))
     monkeypatch.setattr(main, "consigli", Consigli(str(tmp_path)))
     monkeypatch.setattr(main, "yamtrack", Yamtrack())
     plex = Plex("http://plex", mock_arr.PLEX_TOKEN)
@@ -363,3 +365,63 @@ def test_openai_without_structured_output(tmp_path, monkeypatch):
     out = asyncio.run(c.ask("gusti"))
     assert out[0]["anno"] == 1986
     assert len(seen["bodies"]) == 2 and "response_format" not in seen["bodies"][1]
+
+
+# ------------------------------------------------------ note suggerite dall'AI
+
+def test_ai_note_suggestions(app_client, monkeypatch):
+    import json
+
+    import anthropic
+    import httpx2
+
+    assert app_client.post("/api/gusti/movie-1001/note-ai").status_code == 400  # AI non collegata
+    sent = {}
+    long = " ".join(["parola"] * 30)
+
+    def handler(request):
+        sent["body"] = json.loads(request.content)
+        text = json.dumps({"note": ["Fotografia fredda che mette i brividi.", long, "", "Fotografia fredda che mette i brividi."]})
+        return httpx2.Response(200, json={
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+            "content": [{"type": "text", "text": text}], "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": 10, "output_tokens": 20}})
+
+    main.consigli.api_key = "sk-ant-test"
+    monkeypatch.setattr(main.consigli, "_client", lambda key=None: anthropic.AsyncAnthropic(
+        api_key="sk-ant-test", http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler))))
+    app_client.put("/api/gusti/movie-1001", json={"voto": 5, "note": "Il finale"})
+    r = app_client.post("/api/gusti/movie-1001/note-ai")
+    assert r.status_code == 200
+    note = r.json()["note"]
+    # Massimo 20 parole, niente vuote o doppie
+    assert note[0] == "Fotografia fredda che mette i brividi." and len(note) == 2
+    assert len(note[1].split()) == 20 and note[1].endswith("…")
+    body = sent["body"]
+    assert body["output_config"]["format"]["schema"]["required"] == ["note"]
+    prompt = body["messages"][0]["content"]
+    assert "Il mio voto: 5/5" in prompt and '"Il finale"' in prompt and "essermi piaciuto" in prompt
+    assert body["max_tokens"] <= 2000
+    # Nessuna nota salvata da sola
+    assert main.gusti.get("movie-1001")["note"] == "Il finale"
+    assert app_client.post("/api/gusti/movie-424242/note-ai").status_code == 404
+
+
+def test_prompt_uses_watchlist_and_ignored(app_client, monkeypatch):
+    seen = {}
+
+    async def fake_ask(self, prompt):
+        seen["prompt"] = prompt
+        return [{"titolo": "Il mare d'inverno", "titolo_originale": "Il mare d'inverno", "anno": 1986,
+                 "tipo": "film", "motivo": "x"}]
+
+    monkeypatch.setattr(Consigli, "ask", fake_ask)
+    main.consigli.api_key = "k"
+    app_client.put("/api/gusti/movie-1001", json={"mi_piace": True})
+    app_client.put("/api/liste/watchlist/movie-1002")
+    app_client.put("/api/liste/ignorati/movie-1201", json={"scheda": {"title": "Il mare d'inverno", "year": "1986"}})
+    asyncio.run(main.consigli.generate(main.catalog, main.gusti, {}, [], main.liste))
+    assert "watchlist" in seen["prompt"] and "scartato" in seen["prompt"]
+    assert "Il mare d'inverno (1986)" in seen["prompt"]
+    # L'ignorato non viene suggerito anche se il modello lo propone
+    assert main.consigli.data["titoli"] == []
